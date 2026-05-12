@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base app theme — Compose drives the visual styling. We keep this XML theme
+         minimal so it only bootstraps the system bars + background until
+         setContent() takes over. Crush palette lives in Compose (Theme.kt) -->
+    <style name="Theme.Mythara" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/charmtone_bg</item>
+        <item name="android:navigationBarColor">@color/charmtone_bg</item>
+        <item name="android:windowBackground">@color/charmtone_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <!-- Splash theme (Android 12+ SplashScreen API). -->
+    <style name="Theme.Mythara.Splash" parent="Theme.Mythara">
+        <item name="android:windowSplashScreenBackground" tools:targetApi="s">@color/charmtone_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon" tools:targetApi="s">@drawable/splash_icon</item>
+    </style>
+</resources>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Charmtone Pantera palette (Crush). Compose code is the source of truth;
+         these XML colors exist only for system surfaces (status bar, splash). -->
+    <color name="charmtone_bg">#FF201F26</color>
+    <color name="charmtone_charple">#FF6B50FF</color>
+    <color name="charmtone_bok">#FF68FFD6</color>
+</resources>

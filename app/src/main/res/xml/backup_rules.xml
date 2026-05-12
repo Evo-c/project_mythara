@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Legacy (pre-Android-12) backup rules. Block everything for the same
+     reason as data_extraction_rules.xml. -->
+<full-backup-content>
+    <exclude domain="root" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="file" path="." />
+</full-backup-content>
