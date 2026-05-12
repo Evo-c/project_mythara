@@ -9,7 +9,6 @@ import com.mythara.memory.github.GitHubClient
 import com.mythara.memory.github.GitHubClient.Outcome
 import com.mythara.minimax.Region
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.text.SimpleDateFormat
 import java.time.ZoneId
@@ -20,27 +19,38 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Orchestrates the push from local Mythara state → the user's GitHub
- * memory repo. Single entry point: [runSync]. Returns a [Report] so the
- * caller (Settings panel "Sync now", or the nightly WorkManager job)
- * can surface a useful summary.
+ * Pushes Mythara's durable state to a user-owned GitHub repo. Single
+ * entry point per direction: [runSync] pushes; [runRestore] pulls.
  *
- * Today this writes:
- *  - learnings/journal.jsonl       — every LearningJournal entry (M8.0 stub)
- *  - settings/preferences.json     — non-secret prefs (region, model)
- *  - conversations/YYYY-MM-DD.jsonl — chat history, partitioned by day
- *                                    (only if user opts in; OFF by default)
- *  - manifest.json                  — sha cache + last-sync timestamp
+ * **Repo layout** (mobile-optimised, agentmemory-style tiers — see
+ * github.com/rohitg00/agentmemory for the architectural pattern):
  *
- * Each user-data file maps one-to-one to a local snapshot; we don't try
- * to compute diffs — for the sizes involved (kilobytes), rewriting the
- * file each sync is simpler and the GitHub Contents API handles
- * "no-change → same sha" gracefully.
+ * ```
+ * mythara_memory/
+ *   README.md
+ *   MEMORY.md                       — bridge file: top-K active records (Markdown)
+ *   manifest.json                   — version + per-file SHA cache + lastSync
+ *   working/<YYYY-MM-DD>.jsonl      — raw observations, one per line
+ *   episodic/<YYYY-W##>.jsonl       — weekly session summaries  (M8.3+)
+ *   semantic/facts.jsonl            — durable facts / preferences (M8.3+)
+ *   procedural/workflows.jsonl      — action patterns           (M8.4+)
+ *   settings/preferences.json       — region + model + non-secret prefs
+ *   conversations/<YYYY-MM-DD>.jsonl — opt-in chat history per local day
+ * ```
  *
- * Privacy invariants enforced here:
- *  - The MiniMax API key, GitHub PAT, Tink keyset, Secret-mode password,
- *    and any Observe raw audio/transcripts NEVER appear in any file we
- *    write. The categories above are the only ones synced.
+ * Each memory record uses short keys (`t`, `src`, `conf`, `sha`, `ref`,
+ * `seen`) for byte-efficient JSONL — see [MemoryRecord]. Compaction +
+ * cross-tier promotion are M8.3+ work; today only the [Tier.Working]
+ * tier is populated, with per-day partitioning. The tier directories
+ * for episodic/semantic/procedural are written as empty placeholders
+ * so they show up in `git ls-tree` and the layout reads correctly.
+ *
+ * **Privacy invariants** (enforced by code):
+ *  - MiniMax API key, GitHub PAT, Tink keyset, Secret-mode password,
+ *    Observe raw audio/transcripts — never written to this repo.
+ *  - All record content runs through [SecretScrubber] before write.
+ *  - The repo MUST be private. We don't enforce this — but the README
+ *    and the create-repo flow set `private = true`.
  */
 @Singleton
 class MemorySync @Inject constructor(
@@ -66,7 +76,22 @@ class MemorySync @Inject constructor(
     )
 
     private val tag = "Mythara/Memory"
-    private val json = Json { encodeDefaults = false; prettyPrint = true; ignoreUnknownKeys = true }
+
+    /** Compact (no pretty-print) — bytes matter. Tolerant of unknown keys for forward compat. */
+    private val json = Json {
+        encodeDefaults = false
+        prettyPrint = false
+        ignoreUnknownKeys = true
+        explicitNulls = false
+    }
+
+    /** For the human-facing manifest only — pretty-printed. */
+    private val manifestJson = Json {
+        encodeDefaults = false
+        prettyPrint = true
+        ignoreUnknownKeys = true
+        explicitNulls = false
+    }
 
     suspend fun runSync(forcePush: Boolean = false): Report {
         val cfg = memorySettings.snapshot()
@@ -88,49 +113,67 @@ class MemorySync @Inject constructor(
             is Outcome.Error -> return Report(ok = false, message = "GitHub: ${r.message}")
         }
 
-        // Load (or initialise) the per-file sha cache from MemorySettings.
-        val manifest: ManifestV1 = cfg.manifestJson?.let {
-            runCatching { json.decodeFromString(ManifestV1.serializer(), it) }.getOrNull()
-        } ?: ManifestV1()
+        val manifest: ManifestV2 = cfg.manifestJson?.let {
+            runCatching { manifestJson.decodeFromString(ManifestV2.serializer(), it) }.getOrNull()
+        } ?: ManifestV2()
 
         val now = System.currentTimeMillis()
         val written = mutableListOf<String>()
         val skipped = mutableListOf<String>()
 
-        // ---- README.md (one-time documentation, ensures repo isn't empty)
-        if (forcePush || !manifest.files.containsKey(README_PATH)) {
-            putWithCache(client, cfg, README_PATH, README_BODY, manifest, "mythara: seed README", written, skipped)
-        }
+        // README + MEMORY.md (always; they're cheap and the format docs need to be visible).
+        putWithCache(client, cfg, README_PATH, README_BODY, manifest,
+            "mythara: seed README", written, skipped)
 
-        // ---- learnings/journal.jsonl
+        // ---- working/<day>.jsonl  — current tier of raw learnings
         if (cfg.syncLearnings) {
             val entries = journal.read()
-            val body = entries.joinToString("\n") {
-                json.encodeToString(LearningJournal.Entry.serializer(), it)
+            val recordsByDay = entries.groupBy { isoLocalDate(it.tsMillis) }
+            for ((day, dayEntries) in recordsByDay) {
+                val body = dayEntries.joinToString("\n") { entry ->
+                    val rec = entryToWorkingRecord(entry)
+                    json.encodeToString(MemoryRecord.serializer(), rec)
+                }
+                val path = "${Tier.Working.dir}/$day.jsonl"
+                putWithCache(client, cfg, path, body, manifest,
+                    "mythara: working/$day (+${dayEntries.size})", written, skipped)
             }
-            putWithCache(client, cfg, "learnings/journal.jsonl", body, manifest,
-                "mythara: sync journal (${entries.size} entries)", written, skipped)
+
+            // Update MEMORY.md bridge — top recent working records, human-readable.
+            val memoryMd = renderMemoryBridge(entries, cfg)
+            putWithCache(client, cfg, MEMORY_PATH, memoryMd, manifest,
+                "mythara: bridge MEMORY.md", written, skipped)
+        }
+
+        // ---- tier placeholders. Once M8.3+ extractors populate these tiers
+        //      these `.gitkeep`-style stubs get replaced with real records.
+        for (tier in TIER_PLACEHOLDERS) {
+            val path = "${tier.dir}/.gitkeep"
+            if (!manifest.files.containsKey(path)) {
+                putWithCache(client, cfg, path, PLACEHOLDER_BODY, manifest,
+                    "mythara: seed ${tier.dir}/", written, skipped)
+            }
         }
 
         // ---- settings/preferences.json (non-secret prefs only)
         if (cfg.syncSettings) {
             val snap = appSettings.snapshot()
             val obj = SettingsExport(region = snap.region.name, model = snap.model)
-            val body = json.encodeToString(SettingsExport.serializer(), obj)
+            val body = manifestJson.encodeToString(SettingsExport.serializer(), obj)
             putWithCache(client, cfg, "settings/preferences.json", body, manifest,
                 "mythara: sync settings", written, skipped)
         }
 
-        // ---- conversations/<date>.jsonl  (opt-in)
+        // ---- conversations per-day (opt-in)
         if (cfg.syncChat) {
             val rows = history.dao.listAll()
-            val byDay = rows.groupBy { rowToLocalDate(it.tsMillis) }
+            val byDay = rows.groupBy { isoLocalDate(it.tsMillis) }
             for ((day, dayRows) in byDay) {
                 val body = dayRows.joinToString("\n") {
                     json.encodeToString(ChatRowExport.serializer(), ChatRowExport(
-                        ts = it.tsMillis,
+                        t = it.tsMillis,
                         role = it.role,
-                        content = it.content,
+                        content = SecretScrubber.scrub(it.content.orEmpty()).ifBlank { null },
                         toolCallsJson = it.toolCallsJson,
                         toolCallId = it.toolCallId,
                         name = it.name,
@@ -138,19 +181,19 @@ class MemorySync @Inject constructor(
                 }
                 val path = "conversations/$day.jsonl"
                 putWithCache(client, cfg, path, body, manifest,
-                    "mythara: sync conversation $day", written, skipped)
+                    "mythara: chat $day", written, skipped)
             }
         }
 
-        // ---- manifest.json (always last)
+        // ---- manifest.json (always last; lastSyncTs always changes)
         manifest.lastSyncTsMillis = now
-        manifest.version = ManifestV1.CURRENT_VERSION
-        val manifestBody = json.encodeToString(ManifestV1.serializer(), manifest)
+        manifest.version = ManifestV2.CURRENT_VERSION
+        val manifestBody = manifestJson.encodeToString(ManifestV2.serializer(), manifest)
         putWithCache(client, cfg, "manifest.json", manifestBody, manifest,
             "mythara: manifest @ ${isoUtc(now)}", written, skipped, isManifestItself = true)
 
         memorySettings.setLastSyncTs(now)
-        memorySettings.setManifestJson(json.encodeToString(ManifestV1.serializer(), manifest))
+        memorySettings.setManifestJson(manifestJson.encodeToString(ManifestV2.serializer(), manifest))
 
         return Report(
             ok = true,
@@ -160,21 +203,7 @@ class MemorySync @Inject constructor(
         )
     }
 
-    /**
-     * Pull from the memory repo and materialise into local stores. Semantics
-     * are REPLACE — the user explicitly confirms before this runs, and the
-     * point is to bring a fresh device back to the canonical state.
-     *
-     * Order matters:
-     *   1. manifest.json — drives the file list. If missing, the repo is
-     *      uninitialised; nothing to restore.
-     *   2. learnings/journal.jsonl — `LearningJournal.replaceAll`
-     *   3. settings/preferences.json — SettingsStore.setRegion + setModel
-     *   4. conversations per-day jsonl — chat history, bulk insert into Room
-     *
-     * The API key is *not* restored — it's intentionally per-device. The
-     * user re-enters it once on the new phone.
-     */
+    /** Pull from repo + materialise into local stores. REPLACE semantics. */
     suspend fun runRestore(): RestoreReport {
         val cfg = memorySettings.snapshot()
         if (!cfg.configured) return RestoreReport(ok = false, message = "Set a GitHub token + repo in Settings first.")
@@ -186,9 +215,7 @@ class MemorySync @Inject constructor(
             else -> return RestoreReport(ok = false, message = "GitHub auth check failed.")
         }
 
-        // 1. Read manifest
-        val manifestPath = "manifest.json"
-        val manifestRead = client.readFile(cfg.owner, cfg.repo, manifestPath)
+        val manifestRead = client.readFile(cfg.owner, cfg.repo, "manifest.json")
         if (manifestRead is Outcome.NotFound) {
             return RestoreReport(ok = false, message = "Repo has no manifest — nothing to restore yet.")
         }
@@ -196,38 +223,43 @@ class MemorySync @Inject constructor(
             return RestoreReport(ok = false, message = "Could not read manifest from repo.")
         }
         val manifest = runCatching {
-            json.decodeFromString(ManifestV1.serializer(), manifestRead.value.text)
+            manifestJson.decodeFromString(ManifestV2.serializer(), manifestRead.value.text)
         }.getOrElse { return RestoreReport(ok = false, message = "Manifest is malformed.") }
 
         var learnings = 0
         var chatRows = 0
         var settingsOk = false
-        val filesRead = mutableListOf(manifestPath)
+        val filesRead = mutableListOf("manifest.json")
 
-        // 2. learnings/journal.jsonl
-        val journalPath = "learnings/journal.jsonl"
-        if (manifest.files.containsKey(journalPath)) {
-            val r = client.readFile(cfg.owner, cfg.repo, journalPath)
+        // working/<day>.jsonl files in manifest → LearningJournal.replaceAll
+        val workingRecords = mutableListOf<MemoryRecord>()
+        for (path in manifest.files.keys.filter { it.startsWith("${Tier.Working.dir}/") && it.endsWith(".jsonl") }) {
+            val r = client.readFile(cfg.owner, cfg.repo, path)
             if (r is Outcome.Ok) {
-                val entries = r.value.text.lineSequence()
+                r.value.text.lineSequence()
                     .filter { it.isNotBlank() }
                     .mapNotNull {
-                        runCatching { json.decodeFromString(LearningJournal.Entry.serializer(), it) }.getOrNull()
+                        runCatching { json.decodeFromString(MemoryRecord.serializer(), it) }.getOrNull()
                     }
-                    .toList()
-                journal.replaceAll(entries)
-                learnings = entries.size
-                filesRead.add(journalPath)
+                    .forEach { workingRecords.add(it) }
+                filesRead.add(path)
             }
         }
+        if (workingRecords.isNotEmpty()) {
+            val entries = workingRecords.map {
+                LearningJournal.Entry(tsMillis = it.t, kind = it.src, note = it.content)
+            }
+            journal.replaceAll(entries)
+            learnings = entries.size
+        }
 
-        // 3. settings/preferences.json
+        // settings/preferences.json
         val prefsPath = "settings/preferences.json"
         if (manifest.files.containsKey(prefsPath)) {
             val r = client.readFile(cfg.owner, cfg.repo, prefsPath)
             if (r is Outcome.Ok) {
                 val exp = runCatching {
-                    json.decodeFromString(SettingsExport.serializer(), r.value.text)
+                    manifestJson.decodeFromString(SettingsExport.serializer(), r.value.text)
                 }.getOrNull()
                 if (exp != null) {
                     appSettings.setRegion(Region.fromId(exp.region))
@@ -238,7 +270,7 @@ class MemorySync @Inject constructor(
             }
         }
 
-        // 4. conversations per-day jsonl — restore every day file in the manifest
+        // conversations per-day jsonl
         val chatRowsBuffer = mutableListOf<MessageRow>()
         for (path in manifest.files.keys.filter { it.startsWith("conversations/") && it.endsWith(".jsonl") }) {
             val r = client.readFile(cfg.owner, cfg.repo, path)
@@ -251,7 +283,7 @@ class MemorySync @Inject constructor(
                     .forEach { row ->
                         chatRowsBuffer.add(
                             MessageRow(
-                                tsMillis = row.ts,
+                                tsMillis = row.t,
                                 role = row.role,
                                 content = row.content,
                                 toolCallsJson = row.toolCallsJson,
@@ -269,8 +301,7 @@ class MemorySync @Inject constructor(
             chatRows = chatRowsBuffer.size
         }
 
-        // Update local manifest cache so next sync uses the right SHAs.
-        memorySettings.setManifestJson(json.encodeToString(ManifestV1.serializer(), manifest))
+        memorySettings.setManifestJson(manifestJson.encodeToString(ManifestV2.serializer(), manifest))
         memorySettings.setLastSyncTs(manifest.lastSyncTsMillis)
 
         return RestoreReport(
@@ -288,16 +319,13 @@ class MemorySync @Inject constructor(
         cfg: MemorySettings.Snapshot,
         path: String,
         body: String,
-        manifest: ManifestV1,
+        manifest: ManifestV2,
         commitMessage: String,
         written: MutableList<String>,
         skipped: MutableList<String>,
         isManifestItself: Boolean = false,
     ) {
         val prev = manifest.files[path]
-        // Skip identical re-writes (saves a useless commit) unless this is
-        // the manifest itself — manifest must always rewrite because its
-        // lastSyncTs changed.
         if (!isManifestItself && prev?.contentHash == body.hashCode().toString()) {
             skipped.add(path); return
         }
@@ -307,36 +335,83 @@ class MemorySync @Inject constructor(
             previousSha = prev?.sha,
         )) {
             is Outcome.Ok -> {
-                manifest.files[path] = FileEntry(sha = r.value.sha, ts = System.currentTimeMillis(), contentHash = body.hashCode().toString())
+                manifest.files[path] = FileEntry(
+                    sha = r.value.sha,
+                    ts = System.currentTimeMillis(),
+                    contentHash = body.hashCode().toString(),
+                )
                 written.add(path)
             }
             else -> Log.w(tag, "PUT $path failed: $r")
         }
     }
 
-    private fun rowToLocalDate(ms: Long): String {
-        // ISO local date — same key as filename. SimpleDateFormat is safer than
-        // java.time.LocalDate on really old API levels but min API 26 means we
-        // can use java.time freely.
+    private fun entryToWorkingRecord(entry: LearningJournal.Entry): MemoryRecord {
+        val scrubbed = SecretScrubber.scrub(entry.note)
+        val src = "growth:${entry.kind}"
+        val facets = buildList {
+            add("kind:${entry.kind}")
+            add("tier:working")
+        }
+        return MemoryRecord.working(
+            content = scrubbed, src = src, facets = facets,
+            ref = null, now = entry.tsMillis,
+        )
+    }
+
+    /**
+     * Bridge file — like agentmemory's "MEMORY.md" + Karpathy LLM-wiki
+     * convention. Human-readable digest of what the agent currently
+     * "remembers" at the working tier. Will grow to surface promoted
+     * semantic facts once M8.3+ extractors land.
+     */
+    private fun renderMemoryBridge(entries: List<LearningJournal.Entry>, cfg: MemorySettings.Snapshot): String {
+        val sorted = entries.sortedByDescending { it.tsMillis }.take(MEMORY_BRIDGE_CAP)
+        val sb = StringBuilder()
+        sb.append("# Mythara — active memory\n\n")
+        sb.append("> Bridge file. Top ${sorted.size} working observations, freshest first.\n")
+        sb.append("> Auto-managed by the Mythara Android app. ")
+        sb.append("Last sync: ${isoUtc(cfg.lastSyncTs)}\n\n")
+        sb.append("---\n\n")
+        if (sorted.isEmpty()) {
+            sb.append("_(no observations yet — Observe pipeline lands in M8.1+)_\n")
+        } else {
+            for (e in sorted) {
+                val date = isoUtc(e.tsMillis)
+                val scrubbed = SecretScrubber.scrub(e.note)
+                sb.append("- **$date** · `${e.kind}` — $scrubbed\n")
+            }
+        }
+        sb.append("\n---\n\n")
+        sb.append("## Tiers\n\n")
+        sb.append("- `working/`     — raw observations (this tier today)\n")
+        sb.append("- `episodic/`    — weekly summaries (M8.3+)\n")
+        sb.append("- `semantic/`    — durable facts / preferences (M8.3+)\n")
+        sb.append("- `procedural/`  — action patterns / workflows (M8.4+)\n")
+        return sb.toString()
+    }
+
+    private fun isoLocalDate(ms: Long): String {
         val dt = java.time.Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalDate()
         return DateTimeFormatter.ISO_LOCAL_DATE.format(dt)
     }
 
     private fun isoUtc(ms: Long): String {
+        if (ms <= 0L) return "never"
         val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
         fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
         return fmt.format(Date(ms))
     }
 
-    // -------- export shapes (intentionally separate from internal Room schema) --------
+    // -------- on-disk shapes (separate from internal Room schema) --------
 
     @Serializable
-    data class ManifestV1(
+    data class ManifestV2(
         var version: Int = CURRENT_VERSION,
         var lastSyncTsMillis: Long = 0,
         val files: MutableMap<String, FileEntry> = mutableMapOf(),
     ) {
-        companion object { const val CURRENT_VERSION = 1 }
+        companion object { const val CURRENT_VERSION = 2 }
     }
 
     @Serializable
@@ -347,7 +422,7 @@ class MemorySync @Inject constructor(
 
     @Serializable
     data class ChatRowExport(
-        val ts: Long,
+        val t: Long,
         val role: String,
         val content: String? = null,
         val toolCallsJson: String? = null,
@@ -357,32 +432,106 @@ class MemorySync @Inject constructor(
 
     companion object {
         private const val README_PATH = "README.md"
+        private const val MEMORY_PATH = "MEMORY.md"
+        private const val MEMORY_BRIDGE_CAP = 50
+        private val TIER_PLACEHOLDERS = listOf(Tier.Episodic, Tier.Semantic, Tier.Procedural)
+
+        private val PLACEHOLDER_BODY = """
+            # placeholder
+
+            This directory is part of Mythara's memory tier layout
+            (agentmemory-style). It gets populated when its corresponding
+            extractor lands:
+
+            - `episodic/`    — weekly session summaries (M8.3+)
+            - `semantic/`    — durable facts and preferences (M8.3+)
+            - `procedural/`  — action patterns and workflows (M8.4+)
+
+            Today only `working/` carries records.
+        """.trimIndent()
+
         private val README_BODY = """
             # mythara_memory
 
             This repository holds the durable state of one or more **Mythara**
-            installations — the learnings the app has built up about its user,
-            the non-secret settings, and (opt-in) the chat history. It's
-            managed entirely by the Android app via the GitHub Contents API.
+            installations. It's managed entirely by the Android app via the
+            GitHub Contents API — there is no external service.
+
+            The format mirrors the architectural pattern of
+            [agentmemory](https://github.com/rohitg00/agentmemory), adapted for
+            mobile: short JSON keys, per-day partitioning, no embeddings stored
+            on disk, no graph relations on disk (those reconstruct from
+            `facets` + `ref` at recall time).
 
             ## Layout
 
-            - `learnings/journal.jsonl` — append-only log of `LearningJournal` entries.
-            - `settings/preferences.json` — region + model + non-secret prefs.
-            - `conversations/<YYYY-MM-DD>.jsonl` — chat history, partitioned by local day.
-              Only present if the user opted into chat-history sync in Settings.
-            - `manifest.json` — version + per-file SHA cache + last-sync timestamp.
+            ```
+            mythara_memory/
+              README.md                          (this file)
+              MEMORY.md                          (bridge — top-K active records)
+              manifest.json                      (version + per-file SHA cache)
+              working/<YYYY-MM-DD>.jsonl         (raw observations)
+              episodic/<YYYY-W##>.jsonl          (weekly summaries — M8.3+)
+              semantic/facts.jsonl               (durable facts/preferences — M8.3+)
+              procedural/workflows.jsonl         (action patterns — M8.4+)
+              settings/preferences.json          (region + model + non-secret prefs)
+              conversations/<YYYY-MM-DD>.jsonl   (chat history — opt-in)
+            ```
 
-            ## What is **never** in this repo
+            ## Memory record shape (short keys for mobile byte-efficiency)
+
+            ```json
+            { "id": "1a2b...-c3d4e5f6",
+              "t": 1684004400000,
+              "tier": "w",
+              "src": "growth:nightly",
+              "conf": 1.0,
+              "facets": ["topic:python", "kind:preference"],
+              "content": "...",
+              "sha": "ab12cd34...(24 hex)",
+              "ref": "msg:42",
+              "seen": 1 }
+            ```
+
+            Field meanings:
+              - **id**   — ULID-style time-sortable identifier
+              - **t**    — epoch millis
+              - **tier** — `w` working / `e` episodic / `s` semantic / `p` procedural
+              - **src**  — provenance string
+              - **conf** — confidence 0..1
+              - **facets** — dimension:value tags
+              - **content** — short text payload (secrets scrubbed pre-write)
+              - **sha**  — 24-char SHA-256 prefix of content; dedup key
+              - **ref**  — optional back-link to source event
+              - **seen** — reinforcement counter
+
+            ## What is NEVER in this repo
 
             - MiniMax API key
-            - GitHub Personal Access Token
+            - GitHub PAT (this feature's own auth credential)
             - Tink AEAD wrapping key
             - Secret-mode password hash
             - Observe-mode raw audio or transcripts (auto-purged on-device)
 
-            Secrets stay per-device by design. Switching devices means re-entering
-            both API keys; the learnings come back via this repo.
+            All record content is also run through a regex-based scrubber
+            (`SecretScrubber`) that strips anything *shaped like* an API key
+            (ghp_, sk-, eyJ, AKIA, xox*) before write.
+
+            ## Compaction (incoming with M8.3+)
+
+            Working observations get promoted into episodic summaries weekly,
+            then into semantic facts when reinforced (high `seen` counter),
+            then ride the system prompt every chat turn as durable "things I
+            know about the user".
+
+            ## Privacy posture
+
+            Trust model: **private GitHub repo + GitHub access control**. The
+            content is plaintext JSON — auditable by you, your own
+            git-blame-able. No client-side encryption in v1; if you need it,
+            change the repo visibility and `repo` scope of the PAT remain the
+            only access lever. Open an issue and we'll add passphrase-derived
+            AEAD pre-write if the threat model demands it.
         """.trimIndent()
     }
 }
