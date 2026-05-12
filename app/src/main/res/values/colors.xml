@@ -5,4 +5,9 @@
     <color name="charmtone_bg">#FF201F26</color>
     <color name="charmtone_charple">#FF6B50FF</color>
     <color name="charmtone_bok">#FF68FFD6</color>
+
+    <!-- Launcher icon background — lavender mist. Lighter than the in-app
+         dark Crush surfaces by design, so the rose icon stands out on the
+         user's launcher whatever their wallpaper. -->
+    <color name="ic_launcher_background">#FFF0E8FF</color>
 </resources>

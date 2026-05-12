@@ -1,9 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Splash-screen icon — same geometric rose as the launcher icon, but
-  rendered against the in-app dark Charmtone background so the petals
-  glow on first launch. (The launcher icon uses the light-lavender
-  background; the splash uses the dark app background.)
+  Mythara launcher icon — geometric rose.
+
+  Design intent: stylised rose composed entirely of straight-edge geometry
+  (kites + hexagon), not organic curves. 5-fold petal symmetry layered as
+  outer + inner rings offset by 36° plus a Bok-mint hex centre. Reads as
+  "rose" while staying unambiguously geometric and on-brand (Charple petals
+  match the wordmark).
+
+  Coordinate system: 108dp viewport with safe area = inner 72dp circle
+  centred on (54,54). All petal tips stay inside r=30 to survive masking
+  on circular / squircle / pinched-rect launcher shapes.
+
+  Outer petals: 5 long kites rotated 0/72/144/216/288°, Charple #6B50FF.
+  Inner petals: 5 short kites rotated 36/108/180/252/324°, darker Charple.
+  Centre: filled hexagon, Bok #68FFD6.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -11,6 +22,8 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
+    <!-- Outer petals (5, rotated 72° each).
+         Kite from centre (54,54) → (51,38) → (54,24) → (57,38) → close. -->
     <group android:pivotX="54" android:pivotY="54" android:rotation="0">
         <path android:fillColor="#6B50FF"
             android:pathData="M54,54 L51,38 L54,24 L57,38 Z" />
@@ -32,27 +45,31 @@
             android:pathData="M54,54 L51,38 L54,24 L57,38 Z" />
     </group>
 
+    <!-- Inner petals (5, rotated 36° offset, smaller). Darker Charple
+         so they read as a second layer behind the outer ring. -->
     <group android:pivotX="54" android:pivotY="54" android:rotation="36">
-        <path android:fillColor="#9B86FF"
+        <path android:fillColor="#4F3CD9"
             android:pathData="M54,54 L52,44 L54,36 L56,44 Z" />
     </group>
     <group android:pivotX="54" android:pivotY="54" android:rotation="108">
-        <path android:fillColor="#9B86FF"
+        <path android:fillColor="#4F3CD9"
             android:pathData="M54,54 L52,44 L54,36 L56,44 Z" />
     </group>
     <group android:pivotX="54" android:pivotY="54" android:rotation="180">
-        <path android:fillColor="#9B86FF"
+        <path android:fillColor="#4F3CD9"
             android:pathData="M54,54 L52,44 L54,36 L56,44 Z" />
     </group>
     <group android:pivotX="54" android:pivotY="54" android:rotation="252">
-        <path android:fillColor="#9B86FF"
+        <path android:fillColor="#4F3CD9"
             android:pathData="M54,54 L52,44 L54,36 L56,44 Z" />
     </group>
     <group android:pivotX="54" android:pivotY="54" android:rotation="324">
-        <path android:fillColor="#9B86FF"
+        <path android:fillColor="#4F3CD9"
             android:pathData="M54,54 L52,44 L54,36 L56,44 Z" />
     </group>
 
+    <!-- Centre hexagon (flat-top, r ≈ 5). Bok mint accent —
+         the only non-violet element so the eye lands here. -->
     <path android:fillColor="#68FFD6"
         android:pathData="M54,49 L58.33,51.5 L58.33,56.5 L54,59 L49.67,56.5 L49.67,51.5 Z" />
 </vector>

@@ -116,6 +116,11 @@ dependencies {
     // Crypto — Tink AEAD for at-rest secrets (M2 API key encryption)
     implementation(libs.tink.android)
 
+    // WorkManager — GrowthScheduler nightly + weekly self-learning jobs (M8.0+)
+    implementation(libs.androidx.work.runtime)
+    implementation(libs.hilt.work)
+    ksp(libs.hilt.work.compiler)
+
     // M5+ deps deferred until their milestones land:
     //   CameraX (take_photo), SQLCipher (Observe vault), Argon2 (Secret pw)
 }
