@@ -1,5 +1,6 @@
 package com.mythara
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -11,6 +12,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.mythara.auth.AppAuth
 import com.mythara.auth.AuthManager
 import com.mythara.ui.MytharaRoot
+import com.mythara.voice.VoiceActionStore
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -33,6 +35,7 @@ import javax.inject.Inject
 class MainActivity : FragmentActivity() {
 
     @Inject lateinit var authManager: AuthManager
+    @Inject lateinit var voiceActions: VoiceActionStore
     private val appAuth = AppAuth()
     private var lastAuthError: String? = null
 
@@ -40,6 +43,12 @@ class MainActivity : FragmentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Pixel Buds touch-and-hold (and any other "open the digital
+        // assistant" gesture, e.g. squeeze-to-assist, swipe-up assist
+        // gesture) delivers MainActivity an ACTION_ASSIST intent when
+        // Mythara is set as the system default assistant app. We
+        // capture it on both cold start and re-launch via singleTop.
+        handleVoiceIntent(intent)
 
         // Process-wide lifecycle observer: when Mythara is fully sent to
         // the background, immediately flip the gate to Locked. Foreground
@@ -90,5 +99,33 @@ class MainActivity : FragmentActivity() {
                 authErrorMessage = lastAuthError,
             )
         }
+    }
+
+    /**
+     * Re-launch path. The activity is `launchMode="singleTop"` so when
+     * Mythara is already running, an assist gesture brings the same
+     * MainActivity instance forward with the new intent via this
+     * callback rather than a fresh onCreate.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleVoiceIntent(intent)
+    }
+
+    private fun handleVoiceIntent(intent: Intent?) {
+        val action = intent?.action ?: return
+        val source = when (action) {
+            Intent.ACTION_ASSIST -> VoiceActionStore.Source.AssistIntent
+            Intent.ACTION_VOICE_COMMAND -> VoiceActionStore.Source.VoiceCommandIntent
+            Intent.ACTION_WEB_SEARCH -> VoiceActionStore.Source.WebSearchIntent
+            "android.intent.action.SEARCH_LONG_PRESS" -> VoiceActionStore.Source.AssistIntent
+            else -> return
+        }
+        // Strip the action so a configuration change (rotation,
+        // theme switch) doesn't re-trigger listen mode every time
+        // the activity rebuilds.
+        intent.action = Intent.ACTION_MAIN
+        voiceActions.fire(source)
     }
 }

@@ -49,6 +49,27 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Digital Assistant intents.
+                 When the user sets Mythara as the default assistant app
+                 (Settings → Apps → Default apps → Digital assistant app),
+                 Android delivers these intents on:
+                  - Pixel Buds touch-and-hold (and equivalent on other
+                    Google-Assistant-aware earbuds)
+                  - Hardware assist button / squeeze gesture
+                  - System "assist" gesture (long-press home / corner swipe)
+                  - "OK Google" replacement when an alternate assistant is
+                    registered (mileage varies per OEM)
+                 MainActivity.handleVoiceIntent reads the action, fires
+                 VoiceActionStore, and the chat surface kicks off a
+                 one-shot SpeechRecognition listen that submits the
+                 transcript through the agent loop. -->
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <action android:name="android.intent.action.VOICE_COMMAND" />
+                <action android:name="android.intent.action.WEB_SEARCH" />
+                <action android:name="android.intent.action.SEARCH_LONG_PRESS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <!-- Observe-mode foreground service (M8.1a heartbeat skeleton;

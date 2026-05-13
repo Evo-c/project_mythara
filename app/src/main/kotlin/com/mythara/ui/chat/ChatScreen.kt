@@ -50,6 +50,7 @@ import com.mythara.mic.ContinuousSpeechRecognition
 import com.mythara.mic.MicBroker
 import com.mythara.mic.SpeechRecognition
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import com.mythara.ui.theme.Glyph
 import com.mythara.ui.theme.JetBrainsMono
@@ -167,6 +168,67 @@ fun ChatScreen(
             // Always release the mic when the collector unwinds, whether
             // from toggling off, screen exit, or TTS-paused recompose.
             vm.micBroker.release(MicBroker.Client.CONTINUOUS_CHAT)
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Pixel Buds / Digital-Assistant-tap path. When MainActivity fires
+    // VoiceActionStore.fire(...) we kick off a one-shot
+    // SpeechRecognition listen, gather the user's utterance, and
+    // submit() it the same way the mic button does. Works whether
+    // Mythara is brought to foreground from cold start (ACTION_ASSIST
+    // launches the activity) or already in foreground (onNewIntent).
+    LaunchedEffect(Unit) {
+        vm.voiceActions.triggers.collect { trigger ->
+            // Same permission + mic-broker handshake as the continuous
+            // mode collector above. We only acquire when we have the
+            // mic permission AND no other client (Observe / wake /
+            // continuous chat) holds the mic.
+            val granted = ContextCompat.checkSelfPermission(
+                ctx, Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                return@collect
+            }
+            if (ui.thinking || ui.speaking) {
+                // Lumi is mid-reply; ignore the tap. Dropping > queuing
+                // because the user would be confused if a tap from 10
+                // seconds ago suddenly opened the mic right after
+                // hearing the previous answer.
+                android.util.Log.d("Mythara/Chat", "voice trigger ignored: thinking=${ui.thinking} speaking=${ui.speaking}")
+                return@collect
+            }
+            if (!vm.micBroker.acquire(MicBroker.Client.CONTINUOUS_CHAT)) {
+                android.util.Log.w("Mythara/Chat", "voice trigger: mic busy")
+                return@collect
+            }
+            android.util.Log.d("Mythara/Chat", "voice trigger from ${trigger.source}")
+            try {
+                // One-shot listen. Wait for the first Final or Error
+                // (firstOrNull suspends collection until the predicate
+                // matches and then cancels the upstream flow cleanly,
+                // releasing the SpeechRecognizer). This matches the
+                // "tap-to-talk" shape of Pixel Buds touch-and-hold:
+                // speak once, get answered.
+                val terminal: SpeechRecognition.Event? = SpeechRecognition
+                    .listen(ctx)
+                    .firstOrNull { ev ->
+                        ev is SpeechRecognition.Event.Final ||
+                            ev is SpeechRecognition.Event.Error
+                    }
+                when (terminal) {
+                    is SpeechRecognition.Event.Final -> {
+                        val text = terminal.text.trim()
+                        if (text.isNotEmpty()) vm.submit(text)
+                    }
+                    is SpeechRecognition.Event.Error ->
+                        android.util.Log.w("Mythara/Chat", "voice trigger SR error: ${terminal.message}")
+                    else -> { /* upstream cancelled before terminal — no-op */ }
+                }
+            } finally {
+                vm.micBroker.release(MicBroker.Client.CONTINUOUS_CHAT)
+            }
         }
     }
 

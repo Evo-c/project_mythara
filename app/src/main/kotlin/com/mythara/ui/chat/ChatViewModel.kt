@@ -38,6 +38,7 @@ class ChatViewModel @Inject constructor(
     private val vault: com.mythara.secret.observe.vault.LearningVault,
     private val embedder: com.mythara.secret.observe.embed.LocalEmbedder,
     private val memorySyncScheduler: com.mythara.memory.MemorySyncScheduler,
+    val voiceActions: com.mythara.voice.VoiceActionStore,
     @dagger.hilt.android.qualifiers.ApplicationContext private val appCtx: android.content.Context,
 ) : ViewModel() {
     // `_ui` is declared up top so any init block can safely call
