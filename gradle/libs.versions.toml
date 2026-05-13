@@ -32,6 +32,10 @@ lifecycleProcess = "2.8.7"
 vosk = "0.3.47"
 jna = "5.13.0"
 mediapipeText = "0.10.14"
+# CameraX 1.4.x is the latest stable series that lines up with our
+# AGP 8.10 / Kotlin 2.2 toolchain. 1.5.x is still rc as of May 2026 —
+# we only need ImageCapture (one-shot stills), no 1.5-specific features.
+camerax = "1.4.2"
 # LiteRT-LM replaces MediaPipe Tasks-GenAI as Google's on-device LLM runtime
 # of record (May 2026). Speaks the new `.litertlm` bundle format and runs
 # Gemma 4 with auto-NPU dispatch on Tensor G3/G4 + Snapdragon 8 Elite.
@@ -128,6 +132,15 @@ androidx-biometric = { group = "androidx.biometric", name = "biometric", version
 # ProcessLifecycleOwner — fires onStop when the app is fully backgrounded,
 # our signal to auto-lock the auth gate.
 androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version.ref = "lifecycleProcess" }
+
+# CameraX — used by the M5 `take_photo` tool. Headless one-shot
+# ImageCapture bound to ProcessLifecycleOwner (no preview). camera-view
+# is intentionally NOT pulled — we don't render a viewfinder; capture
+# fires silently in the background while the chat surface stays
+# in-frame.
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

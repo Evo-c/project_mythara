@@ -3,6 +3,7 @@ package com.mythara.agent
 import com.mythara.agent.tools.BatteryTool
 import com.mythara.agent.tools.ReadNotificationsTool
 import com.mythara.agent.tools.ReadScreenTool
+import com.mythara.agent.tools.TakePhotoTool
 import com.mythara.agent.tools.TimeTool
 import com.mythara.agent.tools.WebFetchTool
 import com.mythara.minimax.MiniMaxClient
@@ -30,9 +31,10 @@ class ToolRegistry @Inject constructor(
     webFetchTool: WebFetchTool,
     readScreenTool: ReadScreenTool,
     readNotificationsTool: ReadNotificationsTool,
+    takePhotoTool: TakePhotoTool,
 ) {
     private val tools: List<Tool> = listOf(
-        timeTool, batteryTool, webFetchTool, readScreenTool, readNotificationsTool,
+        timeTool, batteryTool, webFetchTool, readScreenTool, readNotificationsTool, takePhotoTool,
     )
     private val byName: Map<String, Tool> = tools.associateBy { it.name }
 

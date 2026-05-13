@@ -159,6 +159,13 @@ dependencies {
     implementation(libs.google.mlkit.language.id)
 
 
+    // CameraX — headless one-shot ImageCapture for the M5 `take_photo`
+    // tool. We pull core + camera2 + lifecycle (no view/preview); the
+    // assistant captures silently without rendering a viewfinder.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+
     // M5+ deps deferred until their milestones land:
-    //   CameraX (take_photo), SQLCipher (Observe vault), Argon2 (Secret pw)
+    //   SQLCipher (Observe vault), Argon2 (Secret pw)
 }
