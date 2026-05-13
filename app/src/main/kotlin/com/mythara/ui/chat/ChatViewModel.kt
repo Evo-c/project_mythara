@@ -28,10 +28,10 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class ChatViewModel @Inject constructor(
-    private val agent: AgentLoop,
+    private val runner: com.mythara.agent.AgentRunner,
     private val history: HistoryRepository,
     private val tts: Tts,
-    private val languageDetector: LanguageDetector,
+    @Suppress("unused") private val languageDetector: LanguageDetector,
     lumiListenerStore: com.mythara.wake.LumiListenerStore,
     val micBroker: com.mythara.mic.MicBroker,
     notifAutoProcessStore: com.mythara.services.NotificationAutoProcessStore,
@@ -259,97 +259,71 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
-     * Public entry. The `fromVoice` flag tells [AgentLoop] this turn
-     * originated from speech (Pixel Buds tap, mic button, continuous
-     * mode, wake-word). The agent loop injects a system message that
-     * pushes the model toward a short, conversational, no-markdown
-     * answer — long paragraphs are unlistenable. Typed messages keep
-     * the default behaviour where the model can produce as much
-     * structured text as it wants.
+     * Public entry. Hands the submit off to [AgentRunner] (which
+     * runs the agent loop in a process-wide scope so it survives
+     * activity death + background). This VM just listens to the
+     * runner's turn-event flow for live UI rendering.
+     *
+     * The `fromVoice` flag tells [AgentLoop] this turn originated
+     * from speech (Pixel Buds tap, mic button, continuous mode,
+     * wake-word) — the loop injects a system message that pushes
+     * the model toward a short, conversational, no-markdown answer.
      */
     fun submit(text: String) = submit(text, fromVoice = false)
 
     fun submit(text: String, fromVoice: Boolean) {
         if (text.isBlank()) return
         _ui.update { it.copy(thinking = true, streaming = "", needsApiKey = false, errorBanner = null) }
+        runner.submit(text, fromVoice = fromVoice)
+    }
+
+    init {
+        // Subscribe to AgentRunner's process-wide event stream so the
+        // chat UI reflects whatever's happening regardless of which
+        // path triggered the turn (composer, voice trigger, wake
+        // word, notification auto-process). When this VM dies the
+        // collection cancels — but the agent loop itself keeps running
+        // in the runner's scope and persists to Room, so a future
+        // recomposition of ChatScreen rebuilds the timeline from
+        // history.dao without missing turns.
         viewModelScope.launch {
-            agent.submit(text, fromVoice = fromVoice).collect { turn ->
-                when (turn) {
-                    is AgentLoop.Turn.Delta -> _ui.update {
-                        it.copy(streaming = (it.streaming ?: "") + turn.text)
-                    }
-                    is AgentLoop.Turn.ToolStart -> {
-                        // Render the bubble in ● running state. The persisted
-                        // tool MessageRow doesn't exist yet — registry hasn't
-                        // executed — so we shadow-track via inflightTools.
-                        val item = ChatItem.Tool(
-                            key = "tool:${turn.callId}",
-                            name = turn.name,
-                            args = turn.args,
-                            state = ToolState.Running,
-                        )
-                        inflightTools[turn.callId] = item
-                        // Force a recompose so the running bubble appears.
-                        viewModelScope.launch { rebuildItems(history.dao.listAll()) }
-                    }
-                    is AgentLoop.Turn.ToolEnd -> {
-                        inflightTools.remove(turn.callId)
-                        // The persisted `role:tool` row will arrive via the
-                        // history flow and replace the inflight stub. Flush
-                        // streaming buffer here too — the assistant might
-                        // have emitted text *before* calling the tool.
-                        _ui.update { it.copy(streaming = "") }
-                    }
-                    is AgentLoop.Turn.Finished -> {
-                        _ui.update { it.copy(streaming = null, thinking = false) }
-                        // Three-step normalisation before TTS:
-                        //  1. Thinks.strip            — remove <think>…</think> reasoning
-                        //  2. SpokenText.forSpeech    — strip markdown / emoji
-                        //  3. LanguageDetector        — auto-pick TTS Locale matching
-                        //                               the reply language (Hindi reply
-                        //                               → Hindi voice). Falls back to
-                        //                               the system default if ML Kit
-                        //                               returns `und` or the engine
-                        //                               doesn't have voice data.
-                        // The userMoodTrend on Turn.Finished (M8.5 phase 3)
-                        // lets Tts modulate pitch + rate: softer + slower for
-                        // anxious/sad/frustrated users, slightly more upbeat
-                        // for excited/happy. Default voice otherwise.
-                        val cleaned = Thinks.strip(turn.finalText)
-                            .removeSuffix(" [hit max iterations]")
-                        val spoken = SpokenText.forSpeech(cleaned)
-                        // Safety net for voice mode. The agent-loop
-                        // system prompt asks the model to be brief on
-                        // voice turns, but if it slips and produces a
-                        // paragraph, the spoken path truncates at the
-                        // last sentence boundary inside DEFAULT_SPEAK_MAX
-                        // so the user isn't stuck listening to a
-                        // 90-second monologue. Chat UI still shows
-                        // the full text unchanged.
-                        val toSpeak = SpokenText.truncateForSpeech(spoken)
-                        // Suppress TTS when the model emitted only the
-                        // NOSURFACE sentinel — this turn was an
-                        // auto-processed notification the model decided
-                        // wasn't worth surfacing. The user shouldn't
-                        // hear anything.
-                        val nosurface = cleaned.trim().equals(
-                            com.mythara.agent.AgentLoop.NOSURFACE_TOKEN,
-                            ignoreCase = true,
-                        )
-                        if (toSpeak.isNotBlank() && !nosurface) {
-                            launch {
-                                val locale = languageDetector.identifyLocale(toSpeak)
-                                tts.speak(toSpeak, locale, turn.userMoodTrend)
-                            }
-                        }
-                    }
-                    is AgentLoop.Turn.Error -> _ui.update {
-                        it.copy(streaming = null, thinking = false, errorBanner = turn.message)
-                    }
-                    is AgentLoop.Turn.MissingApiKey -> _ui.update {
-                        it.copy(streaming = null, thinking = false, needsApiKey = true)
-                    }
-                }
+            runner.turnEvents.collect { turn -> handleTurn(turn) }
+        }
+    }
+
+    private fun handleTurn(turn: AgentLoop.Turn) {
+        when (turn) {
+            is AgentLoop.Turn.Delta -> _ui.update {
+                it.copy(streaming = (it.streaming ?: "") + turn.text)
+            }
+            is AgentLoop.Turn.ToolStart -> {
+                // Render the bubble in ● running state. The persisted
+                // tool MessageRow doesn't exist yet — registry hasn't
+                // executed — so we shadow-track via inflightTools.
+                val item = ChatItem.Tool(
+                    key = "tool:${turn.callId}",
+                    name = turn.name,
+                    args = turn.args,
+                    state = ToolState.Running,
+                )
+                inflightTools[turn.callId] = item
+                viewModelScope.launch { rebuildItems(history.dao.listAll()) }
+            }
+            is AgentLoop.Turn.ToolEnd -> {
+                inflightTools.remove(turn.callId)
+                _ui.update { it.copy(streaming = "") }
+            }
+            is AgentLoop.Turn.Finished -> {
+                // TTS now fires from AgentRunner so a long reply
+                // finishes speaking even if the user navigates away
+                // mid-utterance. We just clear the UI flags here.
+                _ui.update { it.copy(streaming = null, thinking = false) }
+            }
+            is AgentLoop.Turn.Error -> _ui.update {
+                it.copy(streaming = null, thinking = false, errorBanner = turn.message)
+            }
+            is AgentLoop.Turn.MissingApiKey -> _ui.update {
+                it.copy(streaming = null, thinking = false, needsApiKey = true)
             }
         }
     }
