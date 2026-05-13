@@ -5,6 +5,13 @@
     <!-- Core capabilities (full set declared up-front; runtime prompts come later) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Start Mythara at device boot so the assistant is ready without
+         the user having to launch the app first. The BootReceiver
+         wakes the process; everything else (notification listener,
+         accessibility, WorkManager schedules) auto-resumes from
+         there. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -219,6 +226,26 @@
             android:exported="false"
             android:foregroundServiceType="microphone"
             tools:targetApi="34" />
+
+        <!-- Boot + app-update receiver. Wakes Mythara's process the
+             moment the device finishes booting (or after an app
+             update), so the assistant is ready without the user
+             having to launch the app first. The receiver itself
+             does minimal work — re-posts the QuickTalk notification
+             when the toggle is on; everything else (WorkManager
+             periodic jobs, accessibility/notification-listener
+             auto-rebind, MytharaApp.onCreate's bootstrap hooks) is
+             already restart-safe by design. -->
+        <receiver
+            android:name=".services.BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Other services to come:
              * PhoneControlAccessibilityService (M5)

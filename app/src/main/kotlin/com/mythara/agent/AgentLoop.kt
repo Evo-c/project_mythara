@@ -125,6 +125,19 @@ class AgentLoop @Inject constructor(
         // settings). currentMood wins when present.
         val effectiveMood = currentMood ?: moodTrend
 
+        // Temporal anchor — ALWAYS injected, every turn. The agent
+        // gets the current local time + day + timezone + ISO so it
+        // can reason about "yesterday", "3 hours ago", "tomorrow
+        // morning" without calling get_time first. Cheap (~80
+        // tokens) and worth it: without this the model is in an
+        // eternal "now is undefined" state, falls back to its
+        // training-cutoff date, and gives wrong answers to
+        // schedule-aware queries.
+        val timeSystem: ChatMessage = ChatMessage(
+            role = "system",
+            content = buildTimeContext(),
+        )
+
         // Conversational system prompt — applied to EVERY turn now,
         // not just voice. Lumi's whole personality is voice-first; a
         // long markdown-heavy answer is wrong even when typed because
@@ -226,13 +239,15 @@ class AgentLoop @Inject constructor(
             // turn 400s — bricks chat until the user clears history.
             // Sanitise on every send so we self-heal.
             val historyMessages: List<ChatMessage> = sanitizeHistory(rawHistory)
-            // Prepend system messages. Order matters: most-specific
-            // constraints first (voice + audio tags), then mood
-            // framing, then notif if applicable, then recall, then
-            // persisted history. MiniMax weights earlier system
-            // messages more strongly in our experience.
+            // Prepend system messages. Order matters: temporal anchor
+            // first (so the model has "right now" before reasoning
+            // about anything), then conversational style, then audio
+            // tags / mood / notif / recall, then persisted history.
+            // MiniMax weights earlier system messages more strongly
+            // in our experience.
             val prior: List<ChatMessage> = buildList {
-                add(voiceSystem) // always — conversational style is the default
+                add(timeSystem)  // ALWAYS — current time/date/day-of-week/timezone
+                add(voiceSystem) // ALWAYS — conversational style default
                 if (ttsSystem != null) add(ttsSystem)
                 if (moodSystem != null) add(moodSystem)
                 if (notifSystem != null) add(notifSystem)
@@ -574,6 +589,49 @@ class AgentLoop @Inject constructor(
             iterations = iter,
             toolCalls = toolCallsExecuted,
         )
+    }
+
+    /**
+     * Build the temporal-anchor system-message body. Includes:
+     *  - ISO-8601 local timestamp (machine-parseable)
+     *  - day-of-week + time-of-day bucket (so the model picks up
+     *    "Tuesday evening" framing without computing it)
+     *  - timezone offset (so a request like "set a 9am alarm" maps
+     *    to the user's local 9am, not UTC)
+     *  - epoch millis (for any tool that needs to compute deltas)
+     *
+     * Regenerated every turn — never stale.
+     */
+    private fun buildTimeContext(): String {
+        val now = java.time.ZonedDateTime.now()
+        val isoLocal = now.format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+        val dayOfWeek = now.dayOfWeek.getDisplayName(
+            java.time.format.TextStyle.FULL,
+            java.util.Locale.getDefault(),
+        )
+        val timeOfDay = when (now.hour) {
+            in 0..4 -> "late night"
+            in 5..8 -> "early morning"
+            in 9..11 -> "morning"
+            in 12..13 -> "midday"
+            in 14..17 -> "afternoon"
+            in 18..20 -> "evening"
+            in 21..23 -> "night"
+            else -> "morning"
+        }
+        val tz = now.zone.id
+        val epochMs = System.currentTimeMillis()
+        val humanTime = now.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a"))
+        val humanDate = now.format(java.time.format.DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy"))
+        return buildString {
+            append("CURRENT TIME (always-fresh, regenerated every turn — trust THIS over your training data):\n")
+            append("- right now: $humanTime, $humanDate ($timeOfDay)\n")
+            append("- ISO-8601 local: $isoLocal\n")
+            append("- timezone: $tz\n")
+            append("- epoch millis: $epochMs\n")
+            append("Use this anchor for 'yesterday', 'tomorrow', 'last week', " +
+                "'in 2 hours' etc. Do NOT call get_time unless the user explicitly asks for the time itself.")
+        }
     }
 
     private fun encodeToolCalls(calls: List<ToolCall>): String =
