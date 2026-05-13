@@ -11,6 +11,7 @@ import com.mythara.secret.SecretAuthStore
 import com.mythara.secret.observe.ObserveSession
 import com.mythara.secret.observe.ObserveState
 import com.mythara.secret.observe.ObserveStore
+import com.mythara.secret.observe.embed.EmbeddingsModelStore
 import com.mythara.secret.observe.vosk.VoskModelStore
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -32,6 +33,7 @@ class SecretSettingsViewModel @Inject constructor(
     @ApplicationContext private val ctx: Context,
     private val store: ObserveStore,
     private val voskModel: VoskModelStore,
+    private val embedModel: EmbeddingsModelStore,
     private val session: ObserveSession,
     private val secretAuth: SecretAuthStore,
 ) : ViewModel() {
@@ -44,6 +46,7 @@ class SecretSettingsViewModel @Inject constructor(
         val notifRequired: Boolean = false,
         val confirmingForget: Boolean = false,
         val modelState: VoskModelStore.State = VoskModelStore.State.Missing,
+        val embedModelState: EmbeddingsModelStore.State = EmbeddingsModelStore.State.Missing,
         val transcriptCount: Int = 0,
         val recentTranscripts: List<TranscriptPreview> = emptyList(),
         /** True when the user has opted into biometric unlock for Secret mode. */
@@ -71,6 +74,11 @@ class SecretSettingsViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            embedModel.state.collect { ems ->
+                _state.update { it.copy(embedModelState = ems) }
+            }
+        }
+        viewModelScope.launch {
             secretAuth.useBiometricFlow().collect { enabled ->
                 _state.update { it.copy(biometricUnlock = enabled) }
             }
@@ -87,6 +95,18 @@ class SecretSettingsViewModel @Inject constructor(
 
     fun ensureModel() {
         viewModelScope.launch { voskModel.ensureReady() }
+    }
+
+    fun ensureEmbedModel() {
+        viewModelScope.launch { embedModel.ensureReady() }
+    }
+
+    fun forgetVoskModel() {
+        viewModelScope.launch { voskModel.forgetModel() }
+    }
+
+    fun forgetEmbedModel() {
+        viewModelScope.launch { embedModel.forgetModel() }
     }
 
     fun refreshTranscripts() {
@@ -169,6 +189,7 @@ class SecretSettingsViewModel @Inject constructor(
         store.forgetEverything()
         viewModelScope.launch {
             voskModel.forgetModel()
+            embedModel.forgetModel()
             refreshTranscripts()
         }
     }

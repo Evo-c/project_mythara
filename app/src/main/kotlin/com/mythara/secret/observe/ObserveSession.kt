@@ -3,6 +3,7 @@ package com.mythara.secret.observe
 import android.content.Context
 import android.util.Log
 import com.mythara.growth.LearningJournal
+import com.mythara.secret.observe.embed.LocalEmbedder
 import com.mythara.secret.observe.vosk.VoskAsr
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +47,7 @@ import javax.inject.Singleton
 class ObserveSession @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext private val ctx: Context,
     private val asr: VoskAsr,
+    private val embedder: LocalEmbedder,
     private val journal: LearningJournal,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -122,15 +124,39 @@ class ObserveSession @Inject constructor(
 
     private suspend fun writeTranscript(dir: File, text: String) {
         val now = System.currentTimeMillis()
-        val fname = ISO_FMT.format(Date(now)) + ".txt"
-        val file = File(dir, fname)
-        runCatching { file.writeText(text, Charsets.UTF_8) }
+        val base = ISO_FMT.format(Date(now))
+        val txtFile = File(dir, "$base.txt")
+        runCatching { txtFile.writeText(text, Charsets.UTF_8) }
+
+        // Embedding sidecar: 100-dim float32 vector (little-endian, ~400B).
+        // Best-effort — if the embedder isn't ready yet, the transcript is
+        // still captured. M8.3 SelfOrganizer back-fills missing embeddings
+        // on its nightly pass.
+        var embedded = false
+        var embedDim = 0
+        if (embedder.isReady()) {
+            runCatching {
+                val vec = embedder.embed(text)
+                val vecFile = File(dir, "$base.vec")
+                vecFile.writeBytes(LocalEmbedder.encode(vec))
+                embedded = true
+                embedDim = vec.size
+            }.onFailure { e ->
+                android.util.Log.w(TAG, "embed failed: ${e.message}")
+            }
+        }
+
         // Metadata-only journal entry — never the transcript text.
+        val wordCount = text.split(Regex("\\s+")).filter { it.isNotBlank() }.size
         journal.append(
             LearningJournal.Entry(
                 tsMillis = now,
                 kind = "observe",
-                note = "captured transcript (${text.split(Regex("\\s+")).filter { it.isNotBlank() }.size} words)",
+                note = if (embedded) {
+                    "captured transcript ($wordCount words, ${embedDim}-dim embedding)"
+                } else {
+                    "captured transcript ($wordCount words; embedding skipped)"
+                },
             ),
         )
     }

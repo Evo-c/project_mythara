@@ -31,7 +31,7 @@ class RawDataPurger @Inject constructor(@ApplicationContext private val ctx: Con
             val age = now - f.lastModified()
             val ttl = when (f.extension.lowercase()) {
                 "pcm", "wav" -> AUDIO_TTL_MS
-                "txt", "json", "jsonl" -> TRANSCRIPT_TTL_MS
+                "txt", "json", "jsonl", "vec" -> TRANSCRIPT_TTL_MS
                 else -> DEFENSIVE_TTL_MS
             }
             if (age > ttl) {

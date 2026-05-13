@@ -24,6 +24,7 @@ biometric = "1.1.0"
 lifecycleProcess = "2.8.7"
 vosk = "0.3.47"
 jna = "5.13.0"
+mediapipeText = "0.10.14"
 
 # Deferred — added back when their milestone lands:
 #   camerax  → M5 (take_photo tool)
@@ -83,6 +84,10 @@ hilt-work-compiler = { group = "androidx.hilt", name = "hilt-compiler", version.
 # also disables transitive resolution, which is why we don't need to
 # declare JNA twice. Catalog can't carry @aar, so these go into
 # app/build.gradle.kts as explicit string coords.
+
+# MediaPipe Tasks-Text — on-device Universal Sentence Encoder embeddings.
+# 100-dim float vectors, 6MB model (lazy-downloaded, not bundled).
+mediapipe-tasks-text = { group = "com.google.mediapipe", name = "tasks-text", version.ref = "mediapipeText" }
 
 # Biometric / device-credential unlock at app entry
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }

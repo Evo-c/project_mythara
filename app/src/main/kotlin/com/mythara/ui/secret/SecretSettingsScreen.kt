@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.mythara.secret.observe.ObserveState
+import com.mythara.secret.observe.embed.EmbeddingsModelStore
 import com.mythara.secret.observe.vosk.VoskModelStore
 import com.mythara.ui.theme.Glyph
 import com.mythara.ui.theme.MytharaColors
@@ -244,10 +245,19 @@ fun SecretSettingsScreen(
 
         Panel("speech model (Vosk en-us, ~40MB)") {
             when (val ms = state.modelState) {
-                is VoskModelStore.State.Ready -> Text(
-                    text = "${Glyph.Check} model ready", color = MytharaColors.Julep,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+                is VoskModelStore.State.Ready -> {
+                    Text(
+                        text = "${Glyph.Check} model ready", color = MytharaColors.Julep,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Button(
+                        onClick = { vm.forgetVoskModel() },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MytharaColors.Surface, contentColor = MytharaColors.Fg,
+                        ),
+                    ) { Text("${Glyph.Cross} clear cache") }
+                }
                 is VoskModelStore.State.Missing -> {
                     Text(
                         text = "${Glyph.Cross} not downloaded — required for transcription.",
@@ -276,8 +286,65 @@ fun SecretSettingsScreen(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { vm.ensureModel() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MytharaColors.Charple, contentColor = MytharaColors.Fg,
+                            ),
+                        ) { Text("${Glyph.Refresh} retry") }
+                        Button(
+                            onClick = { vm.forgetVoskModel() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MytharaColors.Surface, contentColor = MytharaColors.Fg,
+                            ),
+                        ) { Text("${Glyph.Cross} clear cache") }
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "${Glyph.AccentBar} the model runs entirely on-device. no audio leaves the phone.",
+                color = MytharaColors.FgDim,
+                style = MaterialTheme.typography.bodySmall.copy(letterSpacing = 1.sp),
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        Panel("embeddings (Universal Sentence Encoder, ~6MB)") {
+            when (val es = state.embedModelState) {
+                is EmbeddingsModelStore.State.Ready -> Text(
+                    text = "${Glyph.Check} embedder ready (100-dim)",
+                    color = MytharaColors.Julep,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                is EmbeddingsModelStore.State.Missing -> {
+                    Text(
+                        text = "${Glyph.Cross} not downloaded — transcripts will save without vectors.",
+                        color = MytharaColors.Mustard, style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(8.dp))
                     Button(
-                        onClick = { vm.ensureModel() },
+                        onClick = { vm.ensureEmbedModel() },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MytharaColors.Charple, contentColor = MytharaColors.Fg,
+                        ),
+                    ) { Text("${Glyph.Arrow} download embedder (6MB)") }
+                }
+                is EmbeddingsModelStore.State.Downloading -> Text(
+                    text = "${Glyph.Ellipsis} downloading ${es.pct}%",
+                    color = MytharaColors.Citron, style = MaterialTheme.typography.bodyMedium,
+                )
+                is EmbeddingsModelStore.State.Failed -> {
+                    Text(
+                        text = "${Glyph.Cross} failed: ${es.message}",
+                        color = MytharaColors.Sriracha,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { vm.ensureEmbedModel() },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MytharaColors.Charple, contentColor = MytharaColors.Fg,
                         ),
@@ -286,7 +353,7 @@ fun SecretSettingsScreen(
             }
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "${Glyph.AccentBar} the model runs entirely on-device. no audio leaves the phone.",
+                text = "${Glyph.AccentBar} each captured transcript is embedded locally to a 100-dim vector. semantic retrieval (M8.3+) is built on these. inference runs entirely on-device.",
                 color = MytharaColors.FgDim,
                 style = MaterialTheme.typography.bodySmall.copy(letterSpacing = 1.sp),
             )
