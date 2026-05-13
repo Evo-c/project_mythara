@@ -49,6 +49,29 @@ class LearningVault @Inject constructor(
         val scrubbed = SecretScrubber.scrub(content.trim())
         if (scrubbed.isBlank()) return false
         val sha = sha24(scrubbed)
+        // Live dedup: if we've seen the same content before, reinforce
+        // it instead of inserting a duplicate row. Also upgrade the
+        // existing record opportunistically: if the new observation
+        // carries an embedding that the previous insert didn't have
+        // (e.g. heuristic-extractor inserted before USE-Lite was ready,
+        // Gemma now provides the same content with a vector), patch
+        // the embedding in. Same for confidence — keep the max.
+        val existing = dao.findBySha(sha)
+        if (existing != null) {
+            dao.reinforce(sha, now)
+            val needsEmbedding = existing.embedding == null && embedding != null
+            val needsBetterConf = conf > existing.conf
+            if (needsEmbedding || needsBetterConf) {
+                dao.update(
+                    existing.copy(
+                        embedding = if (needsEmbedding) LocalEmbedder.encode(embedding!!) else existing.embedding,
+                        embModel = if (needsEmbedding) embModel else existing.embModel,
+                        conf = if (needsBetterConf) conf else existing.conf,
+                    ),
+                )
+            }
+            return false
+        }
         val entity = LearningEntity(
             id = newId(now),
             tsMillis = now,

@@ -3,6 +3,7 @@ package com.mythara
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.mythara.agent.SelfOrganizerScheduler
 import com.mythara.growth.GrowthScheduler
 import com.mythara.memory.MemorySyncScheduler
 import dagger.hilt.android.HiltAndroidApp
@@ -24,6 +25,7 @@ class MytharaApp : Application(), Configuration.Provider {
     @Inject lateinit var workerFactory: HiltWorkerFactory
     @Inject lateinit var growthScheduler: GrowthScheduler
     @Inject lateinit var memorySyncScheduler: MemorySyncScheduler
+    @Inject lateinit var selfOrganizerScheduler: SelfOrganizerScheduler
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -34,5 +36,6 @@ class MytharaApp : Application(), Configuration.Provider {
         super.onCreate()
         growthScheduler.start()
         memorySyncScheduler.start()
+        selfOrganizerScheduler.start()
     }
 }

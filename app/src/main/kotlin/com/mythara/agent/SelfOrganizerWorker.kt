@@ -1,0 +1,160 @@
+package com.mythara.agent
+
+import android.content.Context
+import android.util.Log
+import androidx.hilt.work.HiltWorker
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import com.mythara.growth.LearningJournal
+import com.mythara.secret.observe.vault.LearningDao
+import com.mythara.secret.observe.vault.LearningEntity
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedInject
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.time.Duration
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/**
+ * Nightly maintenance pass over the local learning vault — the
+ * organisation half of M8.3 SelfOrganizer. Pairs with the live recall
+ * path in [SemanticRecall].
+ *
+ * The live write path in [com.mythara.secret.observe.vault.LearningVault.add]
+ * now deduplicates new inserts against existing rows by `sha`, so
+ * fresh dupes don't accumulate. But the vault carries pre-fix history
+ * from before that dedup landed, and edge cases (clock skew, races on
+ * the upsert transaction) can still produce duplicates. This worker
+ * sweeps once a day to consolidate them.
+ *
+ * Today's pass (v1):
+ *   - Group all records by `sha`. For each group with >1 row:
+ *       * keep the oldest row (lowest ULID)
+ *       * sum the `seen` counters across the group
+ *       * take max(lastSeenMs) for the keeper
+ *       * upgrade the keeper's embedding/embModel from any duplicate
+ *         that has them (in case the first observation lacked an
+ *         embedding because USE-Lite wasn't ready yet)
+ *       * take max(conf) across the group
+ *       * delete the other rows
+ *   - Journal a one-line summary so the user can see in the growth
+ *     log that the worker ran.
+ *
+ * Future passes (M8.3 part 3+):
+ *   - Cluster working-tier records by embedding cosine, summarise
+ *     each dense cluster into one episodic-tier record via Gemma
+ *   - Demote stale semantic facts (low seen + last-seen > 1y) by
+ *     deletion or archive-tier promotion
+ *   - Compact Room DB
+ */
+@HiltWorker
+class SelfOrganizerWorker @AssistedInject constructor(
+    @Assisted ctx: Context,
+    @Assisted params: WorkerParameters,
+    private val dao: LearningDao,
+    private val journal: LearningJournal,
+) : CoroutineWorker(ctx, params) {
+
+    override suspend fun doWork(): Result {
+        val report = runCatching { dedupBySha() }.getOrElse {
+            Log.w(TAG, "self-organiser threw ${it.message}", it)
+            return Result.retry()
+        }
+        Log.d(TAG, "dedup: groups=${report.groupsConsolidated} rowsDeleted=${report.rowsDeleted}")
+        if (report.groupsConsolidated > 0) {
+            journal.append(
+                LearningJournal.Entry(
+                    tsMillis = System.currentTimeMillis(),
+                    kind = "self-organiser",
+                    note = "consolidated ${report.groupsConsolidated} dup group(s); deleted ${report.rowsDeleted} row(s)",
+                ),
+            )
+        }
+        return Result.success()
+    }
+
+    /** Result envelope so callers can log + journal in one place. */
+    data class DedupReport(val groupsConsolidated: Int, val rowsDeleted: Int)
+
+    /**
+     * Iterates the whole vault once, groups by `sha`, and merges any
+     * group containing >1 row. Linear time + memory in vault size;
+     * at 10k records this is single-digit-ms work. We do not stream
+     * because the merge logic needs all rows of a group at once and
+     * the vault is small enough that memory pressure isn't a concern.
+     */
+    private suspend fun dedupBySha(): DedupReport {
+        val all: List<LearningEntity> = dao.listAll()
+        val groups = all.groupBy { it.sha }.filter { it.value.size > 1 }
+        if (groups.isEmpty()) return DedupReport(0, 0)
+
+        var rowsDeleted = 0
+        for ((_, dupes) in groups) {
+            val keeper = dupes.minByOrNull { it.id } ?: continue
+            val totalSeen = dupes.sumOf { it.seen }
+            val newestLastSeen = dupes.maxOf { it.lastSeenMs }
+            val bestEmbedded = dupes.firstOrNull { it.embedding != null && it.id != keeper.id }
+            val maxConf = dupes.maxOf { it.conf }
+            // Merge keeper carries the union of properties.
+            dao.update(
+                keeper.copy(
+                    seen = totalSeen,
+                    lastSeenMs = newestLastSeen,
+                    embedding = keeper.embedding ?: bestEmbedded?.embedding,
+                    embModel = keeper.embModel ?: bestEmbedded?.embModel,
+                    conf = maxConf,
+                ),
+            )
+            for (dup in dupes) {
+                if (dup.id == keeper.id) continue
+                dao.deleteById(dup.id)
+                rowsDeleted++
+            }
+        }
+        return DedupReport(groupsConsolidated = groups.size, rowsDeleted = rowsDeleted)
+    }
+
+    companion object {
+        private const val TAG = "Mythara/SelfOrg"
+        const val UNIQUE_PERIODIC = "mythara_self_organiser_periodic"
+    }
+}
+
+@Singleton
+class SelfOrganizerScheduler @Inject constructor(@ApplicationContext private val ctx: Context) {
+    private val wm: WorkManager get() = WorkManager.getInstance(ctx)
+
+    /**
+     * Daily cadence with battery-friendly constraints. Idempotent: safe
+     * to call on every app cold-start; WorkManager's `UPDATE` policy
+     * leaves the existing schedule in place when one already exists.
+     */
+    fun start() {
+        val req = PeriodicWorkRequestBuilder<SelfOrganizerWorker>(Duration.ofHours(24))
+            .setConstraints(
+                Constraints.Builder()
+                    // Doesn't need charging — the work is small (vault
+                    // scan + a handful of updates), but battery-not-low
+                    // is a good citizen.
+                    .setRequiresBatteryNotLow(true)
+                    .build(),
+            )
+            // Stagger after MemorySyncWorker so we don't slam the
+            // first-night cadence with two large workers back-to-back.
+            .setInitialDelay(Duration.ofHours(2))
+            .build()
+        wm.enqueueUniquePeriodicWork(
+            SelfOrganizerWorker.UNIQUE_PERIODIC,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            req,
+        )
+    }
+
+    fun pause() {
+        wm.cancelUniqueWork(SelfOrganizerWorker.UNIQUE_PERIODIC)
+    }
+}

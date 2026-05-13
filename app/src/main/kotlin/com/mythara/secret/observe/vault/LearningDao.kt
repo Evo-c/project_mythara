@@ -46,6 +46,17 @@ interface LearningDao {
     @Query("DELETE FROM learnings")
     suspend fun clear()
 
+    @Query("DELETE FROM learnings WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    /**
+     * Unbounded list-all. Only used by [com.mythara.agent.SelfOrganizerWorker]'s
+     * nightly dedup pass — production code should always use [listRecent] or
+     * [listByTier] which carry an explicit limit.
+     */
+    @Query("SELECT * FROM learnings")
+    suspend fun listAll(): List<LearningEntity>
+
     /**
      * Atomic insert-or-reinforce: if a record with the same SHA already
      * exists we just bump its [LearningEntity.seen] counter; otherwise the
