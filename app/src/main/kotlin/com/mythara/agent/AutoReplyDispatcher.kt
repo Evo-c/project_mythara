@@ -2,6 +2,8 @@ package com.mythara.agent
 
 import android.content.Context
 import android.util.Log
+import com.mythara.agent.queue.PendingReplyQueue
+import com.mythara.agent.queue.PendingReplyRoute
 import com.mythara.audit.AuditLogger
 import com.mythara.data.AutoTriageStore
 import com.mythara.data.AutopilotStore
@@ -54,6 +56,7 @@ class AutoReplyDispatcher @Inject constructor(
     private val entAutopilot: EnterpriseAutopilotStore,
     private val triage: AutoTriageStore,
     private val runner: AgentRunner,
+    private val queue: PendingReplyQueue,
     private val audit: AuditLogger,
     private val imageIngestor: NotificationImageIngestor,
     private val convWriter: ConversationMessageWriter,
@@ -111,12 +114,11 @@ class AutoReplyDispatcher @Inject constructor(
             Log.d(TAG, "enterprise autopilot off — skipping ${r.packageName}")
             return
         }
-        // Don't pile turns on a busy agent — overlapping streaming +
-        // TTS reads back garbled audio.
-        if (runner.busy.value) {
-            Log.d(TAG, "agent busy — deferring incoming on ${r.packageName}")
-            return
-        }
+        // (The old runner.busy gate that silently DROPPED notifications
+        // when the agent was mid-turn is gone — PendingReplyQueue
+        // serializes drains end-to-end, so a burst of notifications all
+        // get persisted and processed one after the other instead of
+        // racing the live turn and being lost.)
 
         // Route 1: favorite match — explicit per-contact tone.
         val fav = favorites.matchByName(title)
@@ -188,13 +190,14 @@ class AutoReplyDispatcher @Inject constructor(
 
     private suspend fun fireFavoriteReply(fav: FavoritesStore.Favorite, body: String, pkg: String) {
         val hasImage = looksLikeImageNotification(body)
-        Log.d(TAG, "auto-reply firing: ${fav.name} via $pkg (tone=${fav.tone.label}, image=$hasImage)")
-        audit.logSystem("auto-reply trigger: ${fav.name} on $pkg tone=${fav.tone.label} image=$hasImage")
+        Log.d(TAG, "auto-reply enqueue: ${fav.name} via $pkg (tone=${fav.tone.label}, image=$hasImage)")
+        audit.logSystem("auto-reply enqueue: ${fav.name} on $pkg tone=${fav.tone.label} image=$hasImage")
         // Store the incoming message in the vault so the analytics
         // builder can fold it into the per-contact profile alongside
         // image learnings + outgoing replies. Same facet shape as
         // notification-image so SemanticRecall + ContactAnalyticsBuilder
-        // pick it up uniformly.
+        // pick it up uniformly. Done at enqueue (not at drain) so the
+        // analytics signal is preserved even if the drain never runs.
         convWriter.record(fav.name, body, pkg, direction = "incoming")
         val turnText = buildString {
             append(AUTO_REPLY_PREFIX).append(' ')
@@ -205,13 +208,19 @@ class AutoReplyDispatcher @Inject constructor(
             append("has_image=").append(if (hasImage) "true" else "false").append('\n')
             append("incoming: ").append(body)
         }
-        runner.submit(text = turnText, fromVoice = false)
+        queue.enqueue(
+            pkg = pkg,
+            senderTitle = fav.name,
+            body = body,
+            route = PendingReplyRoute.FAVORITE_REPLY,
+            turnText = turnText,
+        )
     }
 
     private suspend fun fireTriage(senderTitle: String, body: String, pkg: String) {
         val hasImage = looksLikeImageNotification(body)
-        Log.d(TAG, "triage firing: sender=$senderTitle via $pkg (image=$hasImage)")
-        audit.logSystem("auto-triage trigger: $senderTitle on $pkg image=$hasImage")
+        Log.d(TAG, "triage enqueue: sender=$senderTitle via $pkg (image=$hasImage)")
+        audit.logSystem("auto-triage enqueue: $senderTitle on $pkg image=$hasImage")
         // Store incoming for analytics. Non-favorites still build up
         // per-sender data — they appear in the People list below the
         // favorites and accumulate context the same way.
@@ -227,7 +236,13 @@ class AutoReplyDispatcher @Inject constructor(
             append("has_image=").append(if (hasImage) "true" else "false").append('\n')
             append("incoming: ").append(body)
         }
-        runner.submit(text = turnText, fromVoice = false)
+        queue.enqueue(
+            pkg = pkg,
+            senderTitle = senderTitle,
+            body = body,
+            route = PendingReplyRoute.TRIAGE,
+            turnText = turnText,
+        )
     }
 
     /**

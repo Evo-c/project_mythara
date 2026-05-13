@@ -5,6 +5,8 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.mythara.agent.AutoReplyDispatcher
 import com.mythara.agent.NotificationImageIngestor
+import com.mythara.agent.queue.PendingReplyKickScheduler
+import com.mythara.agent.queue.PendingReplyQueue
 import com.mythara.analytics.ContactAnalyticsScheduler
 import com.mythara.agent.SelfOrganizerScheduler
 import com.mythara.growth.GrowthScheduler
@@ -44,6 +46,8 @@ class MytharaApp : Application(), Configuration.Provider {
     @Inject lateinit var autoReplyDispatcher: AutoReplyDispatcher
     @Inject lateinit var notificationImageIngestor: NotificationImageIngestor
     @Inject lateinit var contactAnalyticsScheduler: ContactAnalyticsScheduler
+    @Inject lateinit var pendingReplyQueue: PendingReplyQueue
+    @Inject lateinit var pendingReplyKickScheduler: PendingReplyKickScheduler
 
     // App-scoped supervisor for fire-and-forget process-level
     // coroutines (settings-flow observers etc.). Cancelled implicitly
@@ -61,10 +65,23 @@ class MytharaApp : Application(), Configuration.Provider {
         growthScheduler.start()
         memorySyncScheduler.start()
         selfOrganizerScheduler.start()
+        // Persistent reply queue — has to start BEFORE AutoReplyDispatcher
+        // because the dispatcher's enqueue() calls land in this queue.
+        // start() also runs the cold-boot recovery sweep that resets any
+        // IN_FLIGHT rows orphaned by the previous process dying mid-turn.
+        pendingReplyQueue.start()
+        // Periodic safety-net worker — wakes the process every ~30 min
+        // and asks the queue to drain anything that's been sitting in
+        // PENDING because the process was killed since the row was
+        // enqueued. Covers the gap where MytharaApp.onCreate isn't
+        // triggered for a while (no notifications, app not opened).
+        pendingReplyKickScheduler.start()
         // Auto-reply dispatcher subscribes to the global notification
         // stream at boot. It self-gates on AutopilotStore +
         // EnterpriseAutopilotStore + FavoritesStore — flipping any of
         // those off pauses auto-replies without stopping the listener.
+        // Routes every "should auto-reply" decision into the
+        // pendingReplyQueue above rather than firing the agent directly.
         autoReplyDispatcher.start()
         // Notification-image ingestor — the dispatcher enqueues
         // attached images here; the ingestor processes them one at
