@@ -39,6 +39,8 @@ class ChatViewModel @Inject constructor(
     private val embedder: com.mythara.secret.observe.embed.LocalEmbedder,
     private val memorySyncScheduler: com.mythara.memory.MemorySyncScheduler,
     val voiceActions: com.mythara.voice.VoiceActionStore,
+    val confirmationGate: com.mythara.agent.ConfirmationGate,
+    private val allowlist: com.mythara.data.AllowlistStore,
     @dagger.hilt.android.qualifiers.ApplicationContext private val appCtx: android.content.Context,
 ) : ViewModel() {
     // `_ui` is declared up top so any init block can safely call
@@ -354,6 +356,26 @@ class ChatViewModel @Inject constructor(
 
     fun dismissError() = _ui.update { it.copy(errorBanner = null) }
     fun dismissMissingKey() = _ui.update { it.copy(needsApiKey = false) }
+
+    /**
+     * Resolve a pending ConfirmationGate prompt. Called by
+     * [ConfirmationDialog] when the user taps Allow / Deny.
+     * Persists the allowlist entry asynchronously when
+     * [alwaysAllow] is true; the gate itself is freed immediately.
+     */
+    fun resolveConfirmation(
+        request: com.mythara.agent.ConfirmationGate.ConfirmRequest,
+        decision: com.mythara.agent.ConfirmationGate.Decision,
+        alwaysAllow: Boolean,
+    ) {
+        if (alwaysAllow &&
+            decision == com.mythara.agent.ConfirmationGate.Decision.Allow &&
+            request.allowlistKey != null
+        ) {
+            viewModelScope.launch { allowlist.allow(request.allowlistKey) }
+        }
+        confirmationGate.resolve(request.id, decision)
+    }
 
     fun setContinuousMode(value: Boolean) = _ui.update { it.copy(continuousMode = value) }
 

@@ -30,6 +30,24 @@ interface Tool {
     val requiresConfirmation: Boolean get() = false
 
     /**
+     * Build a confirmation request from the actual arguments the model
+     * is about to fire with. Returning null means "no prompt this call"
+     * (e.g. a tool whose default is destructive but this particular
+     * args combination is benign). Returning a populated
+     * [ConfirmationGate.ConfirmRequest] routes execution through the
+     * gate; if the user denies, the tool returns `user_canceled`
+     * without [execute] running.
+     *
+     * The `id` field on the returned request is overwritten by
+     * [ToolRegistry] before sending to the gate — implementations can
+     * leave it as the empty string.
+     *
+     * Default no-op so tools that don't need confirmation can ignore
+     * this method.
+     */
+    fun confirmationFor(args: JsonObject): ConfirmationGate.ConfirmRequest? = null
+
+    /**
      * Run the tool. `args` is the JSON-parsed object passed by the model.
      * The result's `output` is what we hand back as a `role: tool` message —
      * the model sees it on its next turn. Truncate long outputs upstream;

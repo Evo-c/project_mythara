@@ -52,6 +52,9 @@ class ToolRegistry @Inject constructor(
     openAppTool: OpenAppTool,
     listAppsTool: ListAppsTool,
     spawnAgentTool: SpawnAgentTool,
+    smsDirectTool: com.mythara.agent.tools.SmsDirectTool,
+    private val gate: ConfirmationGate,
+    private val allowlist: com.mythara.data.AllowlistStore,
 ) {
     private val tools: List<Tool> = listOf(
         timeTool, batteryTool, webFetchTool,
@@ -61,6 +64,7 @@ class ToolRegistry @Inject constructor(
         smsComposerTool, placeCallTool,
         flashlightTool, openAppTool, listAppsTool,
         spawnAgentTool,
+        smsDirectTool,
     )
     private val byName: Map<String, Tool> = tools.associateBy { it.name }
 
@@ -82,12 +86,37 @@ class ToolRegistry @Inject constructor(
     /**
      * Execute a tool by name. Always returns a [ToolResult] — never throws.
      * The model sees `output` verbatim as the next `tool` message body.
+     *
+     * Destructive tools route through [ConfirmationGate]. When the tool
+     * returns a non-null [Tool.confirmationFor] we:
+     *   1. Check the allowlist — if the user previously ticked
+     *      "Always allow this" for this key, fire without prompting.
+     *   2. Otherwise pop a confirmation dialog and suspend until the
+     *      user accepts or denies. Denial yields a `user_canceled`
+     *      ToolResult that the model sees and can react to ("ok, I
+     *      won't send the SMS then").
      */
     suspend fun execute(name: String, argsJson: String): ToolResult {
         val tool = byName[name] ?: return ToolResult.fail("unknown tool: $name")
         val args: JsonObject = runCatching {
             MiniMaxClient.json.decodeFromString<JsonObject>(argsJson.ifBlank { "{}" })
         }.getOrElse { JsonObject(emptyMap()) }
+
+        val confirmStub = tool.confirmationFor(args)
+        if (confirmStub != null) {
+            val allowKey = confirmStub.allowlistKey
+            val preAuthorized = allowKey != null && allowlist.isAllowed(allowKey)
+            if (!preAuthorized) {
+                val req = confirmStub.copy(id = gate.newId(tool.name))
+                val decision = gate.request(req)
+                if (decision == ConfirmationGate.Decision.Deny) {
+                    return ToolResult.fail(
+                        """{"error":"user_canceled","detail":"User declined the confirmation prompt for ${tool.name}."}""",
+                    )
+                }
+            }
+        }
+
         return runCatching { tool.execute(args) }
             .getOrElse { ToolResult.fail(it.message ?: "tool threw ${it.javaClass.simpleName}") }
     }

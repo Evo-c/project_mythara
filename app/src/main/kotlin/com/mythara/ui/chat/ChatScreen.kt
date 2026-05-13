@@ -276,6 +276,22 @@ fun ChatScreen(
             enabled = !ui.thinking,
         )
     }
+
+    // ConfirmationGate dialog overlay. Renders the topmost pending
+    // request from the gate; subsequent requests queue and pop after
+    // the current one resolves. We collect from a SharedFlow but
+    // also read currentRequest as a snapshot fallback so the dialog
+    // survives a recompose (e.g. theme change mid-prompt).
+    val pendingRequest by vm.confirmationGate.pending.collectAsState(initial = null)
+    val request = pendingRequest ?: vm.confirmationGate.currentRequest
+    if (request != null) {
+        ConfirmationDialog(
+            request = request,
+            onResolve = { decision, always ->
+                vm.resolveConfirmation(request, decision, always)
+            },
+        )
+    }
 }
 
 @Composable
