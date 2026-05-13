@@ -58,6 +58,7 @@ class SelfOrganizerWorker @AssistedInject constructor(
     private val dao: LearningDao,
     private val journal: LearningJournal,
     private val episodic: EpisodicPromoter,
+    private val decayer: StaleDecayer,
 ) : CoroutineWorker(ctx, params) {
 
     override suspend fun doWork(): Result {
@@ -82,6 +83,20 @@ class SelfOrganizerWorker @AssistedInject constructor(
                 "created=${episodicReport.episodicCreated} skip=${episodicReport.skippedReason ?: "-"}",
         )
 
+        // Step 3: stale decay. Halves confidence on year-old semantic
+        // facts that were never reinforced; deletes ones that have
+        // decayed past the floor. Cheap (single DAO scan) and
+        // tolerant of failures — log + carry on like episodic.
+        val decayReport = runCatching { decayer.decay() }.getOrElse { e ->
+            Log.w(TAG, "stale decay threw ${e.message}", e)
+            StaleDecayer.Report(0, 0, 0)
+        }
+        Log.d(
+            TAG,
+            "decay: scanned=${decayReport.candidatesScanned} decayed=${decayReport.confidenceDecayed} " +
+                "deleted=${decayReport.recordsDeleted}",
+        )
+
         // Journal: combined summary so the growth log shows what happened.
         val notes = buildList {
             if (dedupReport.groupsConsolidated > 0) {
@@ -89,6 +104,9 @@ class SelfOrganizerWorker @AssistedInject constructor(
             }
             if (episodicReport.episodicCreated > 0) {
                 add("promoted ${episodicReport.episodicCreated} episodic record(s) from ${episodicReport.clustersFound} cluster(s)")
+            }
+            if (decayReport.confidenceDecayed > 0 || decayReport.recordsDeleted > 0) {
+                add("decayed ${decayReport.confidenceDecayed} stale fact(s), deleted ${decayReport.recordsDeleted}")
             }
         }
         if (notes.isNotEmpty()) {
