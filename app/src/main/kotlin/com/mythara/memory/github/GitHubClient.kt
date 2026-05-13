@@ -125,6 +125,10 @@ class GitHubClient(private val pat: String) {
      * current sha and retrying with it. This handles the case where
      * our local manifest cache went stale (different device wrote the
      * file in between our sync runs).
+     *
+     * For multi-device scenarios use [writeFileMerging] instead — it
+     * adds a remote/local merge step so concurrent JSONL appends don't
+     * clobber each other.
      */
     suspend fun writeFile(
         owner: String,
@@ -166,6 +170,85 @@ class GitHubClient(private val pat: String) {
             attempt.code() == 401 -> Outcome.Unauthorized(readErr(attempt) ?: "Auth failed.")
             attempt.code() == 409 -> Outcome.Conflict(readErr(attempt) ?: "Concurrent write — try sync again.")
             else -> Outcome.Error(attempt.code(), readErr(attempt) ?: "PUT contents failed (${attempt.code()})")
+        }
+    }
+
+    /**
+     * Like [writeFile] but conflict-aware. On a sha-mismatch failure
+     * (422 with stale sha, or 409 — both indicate another writer landed
+     * a commit between our last read and our PUT), this:
+     *
+     *   1. Re-fetches the remote file
+     *   2. Calls [merge] to combine remote + local content
+     *   3. Retries the PUT with the merged body + the remote's fresh sha
+     *
+     * One retry only — a second 409 means three-way contention which
+     * the caller should surface, not silently loop. The merge function
+     * is the strategy: JSONL files want a line-union by ID; manifests
+     * want a per-key newest-wins merge; single-author files (README,
+     * settings) can pass `{ _, local -> local }` to keep their local
+     * version and just refresh the sha.
+     */
+    suspend fun writeFileMerging(
+        owner: String,
+        repo: String,
+        path: String,
+        text: String,
+        commitMessage: String,
+        branch: String,
+        previousSha: String? = null,
+        merge: (remote: String, local: String) -> String,
+    ): Outcome<FileContent> {
+        // First pass: optimistic, using the sha the caller has cached.
+        val first = writeFile(
+            owner = owner, repo = repo, path = path,
+            text = text, commitMessage = commitMessage,
+            branch = branch, previousSha = previousSha,
+        )
+        if (first !is Outcome.Conflict && first !is Outcome.Error) return first
+        // The above writeFile already retried 422-with-null-sha by
+        // refetching, so we only land here on 409 or a non-recoverable
+        // error. Treat 409 as merge-and-retry.
+        val needsMerge = (first is Outcome.Conflict) ||
+            (first is Outcome.Error && first.httpStatus == 409)
+        if (!needsMerge) return first
+
+        Log.d(TAG, "merging $path — concurrent write detected, fetching remote")
+        val remote = readFile(owner, repo, path)
+        if (remote !is Outcome.Ok) {
+            // Remote was deleted mid-race, or we lost auth. Fall back to
+            // a plain PUT with no sha (create semantics).
+            return writeFile(
+                owner = owner, repo = repo, path = path,
+                text = text, commitMessage = commitMessage,
+                branch = branch, previousSha = null,
+            )
+        }
+        val merged = runCatching { merge(remote.value.text, text) }.getOrElse {
+            return Outcome.Error(
+                httpStatus = -1,
+                message = "merge failed for $path: ${it.message}",
+            )
+        }
+        val mergedBase64 = Base64.encodeToString(merged.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val retry = api.putContents(
+            owner, repo, path,
+            PutContentRequest(
+                message = "$commitMessage (merged)",
+                content = mergedBase64,
+                sha = remote.value.sha,
+                branch = branch,
+            ),
+        )
+        return when {
+            retry.isSuccessful -> Outcome.Ok(
+                FileContent(sha = retry.body()?.content?.sha.orEmpty(), text = merged),
+            )
+            retry.code() == 409 -> Outcome.Conflict(
+                "Three-way race on $path — try sync again in a moment.",
+            )
+            retry.code() == 401 -> Outcome.Unauthorized(readErr(retry) ?: "Auth failed mid-merge.")
+            else -> Outcome.Error(retry.code(), readErr(retry) ?: "merge retry failed (${retry.code()})")
         }
     }
 

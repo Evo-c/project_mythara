@@ -60,6 +60,7 @@ class MemorySync @Inject constructor(
     private val appSettings: SettingsStore,
     private val history: HistoryRepository,
     private val vault: LearningVault,
+    private val deviceIdStore: DeviceIdStore,
 ) {
     data class Report(
         val ok: Boolean,
@@ -99,6 +100,7 @@ class MemorySync @Inject constructor(
         val cfg = memorySettings.snapshot()
         if (!cfg.enabled) return Report(ok = false, message = "Memory sync disabled.")
         if (!cfg.configured) return Report(ok = false, message = "Set a GitHub token + repo in Settings.")
+        val deviceId = deviceIdStore.id()
 
         val client = GitHubClient(cfg.pat!!)
         when (val v = client.validateToken()) {
@@ -133,7 +135,7 @@ class MemorySync @Inject constructor(
             val recordsByDay = entries.groupBy { isoLocalDate(it.tsMillis) }
             for ((day, dayEntries) in recordsByDay) {
                 val body = dayEntries.joinToString("\n") { entry ->
-                    val rec = entryToWorkingRecord(entry)
+                    val rec = entryToWorkingRecord(entry, deviceId)
                     json.encodeToString(MemoryRecord.serializer(), rec)
                 }
                 val path = "${Tier.Working.dir}/$day.jsonl"
@@ -162,7 +164,7 @@ class MemorySync @Inject constructor(
                 }
             for ((topic, records) in byTopic) {
                 val body = records.joinToString("\n") { entity ->
-                    json.encodeToString(MemoryRecord.serializer(), vault.toMemoryRecord(entity))
+                    json.encodeToString(MemoryRecord.serializer(), vault.toMemoryRecord(entity, dev = deviceId))
                 }
                 val path = "${Tier.Semantic.dir}/$topic.jsonl"
                 putWithCache(client, cfg, path, body, manifest,
@@ -209,6 +211,7 @@ class MemorySync @Inject constructor(
                         toolCallsJson = it.toolCallsJson,
                         toolCallId = it.toolCallId,
                         name = it.name,
+                        dev = deviceId,
                     ))
                 }
                 val path = "conversations/$day.jsonl"
@@ -361,16 +364,23 @@ class MemorySync @Inject constructor(
         if (!isManifestItself && prev?.contentHash == body.hashCode().toString()) {
             skipped.add(path); return
         }
-        when (val r = client.writeFile(
+        val merger = mergerFor(path, manifest)
+        when (val r = client.writeFileMerging(
             owner = cfg.owner, repo = cfg.repo, path = path,
             text = body, commitMessage = commitMessage, branch = cfg.branch,
             previousSha = prev?.sha,
+            merge = merger,
         )) {
             is Outcome.Ok -> {
+                // Persist the hash of whatever actually landed on the remote
+                // — that may be the merged blob, not the local body. Skip
+                // logic on the next sync compares hash-of-local against this;
+                // a divergence triggers another PUT, which the merger will
+                // re-stabilise. Eventually convergent.
                 manifest.files[path] = FileEntry(
                     sha = r.value.sha,
                     ts = System.currentTimeMillis(),
-                    contentHash = body.hashCode().toString(),
+                    contentHash = r.value.text.hashCode().toString(),
                 )
                 written.add(path)
             }
@@ -378,7 +388,78 @@ class MemorySync @Inject constructor(
         }
     }
 
-    private fun entryToWorkingRecord(entry: LearningJournal.Entry): MemoryRecord {
+    /**
+     * Pick a remote/local merge strategy by file path:
+     *
+     *  - JSONL records (`working/`, `semantic/`, `conversations/`):
+     *    line-union, deduping by [MemoryRecord.id] or by the
+     *    `(t, role, content)` tuple for chat rows. Sorted by `t` so
+     *    the file stays append-ordered.
+     *  - `manifest.json`: per-path entry newest-wins, union of
+     *    [ManifestV2.files], `lastSyncTsMillis = max(remote, local)`.
+     *  - Everything else (README, MEMORY.md, settings, .gitkeep,
+     *    placeholders): single-author, last-writer-wins — return local.
+     */
+    private fun mergerFor(path: String, manifest: ManifestV2): (String, String) -> String = when {
+        path == "manifest.json" -> ::mergeManifests
+        path.startsWith("conversations/") && path.endsWith(".jsonl") -> ::mergeChatJsonl
+        path.endsWith(".jsonl") -> ::mergeRecordJsonl
+        else -> { _, local -> local }
+    }
+
+    private fun mergeRecordJsonl(remote: String, local: String): String {
+        val parseLine: (String) -> MemoryRecord? = { line ->
+            runCatching { json.decodeFromString(MemoryRecord.serializer(), line) }.getOrNull()
+        }
+        val combined = linkedMapOf<String, MemoryRecord>()
+        // Remote first so local (this device's view) overrides on id collision
+        // — local writes are typically newer reinforcement bumps.
+        remote.lineSequence().filter { it.isNotBlank() }.mapNotNull(parseLine).forEach { combined[it.id] = it }
+        local .lineSequence().filter { it.isNotBlank() }.mapNotNull(parseLine).forEach { combined[it.id] = it }
+        return combined.values.sortedBy { it.t }
+            .joinToString("\n") { json.encodeToString(MemoryRecord.serializer(), it) }
+    }
+
+    private fun mergeChatJsonl(remote: String, local: String): String {
+        val parseLine: (String) -> ChatRowExport? = { line ->
+            runCatching { json.decodeFromString(ChatRowExport.serializer(), line) }.getOrNull()
+        }
+        // No `id` field on chat rows — key on (t, role, content-hash) so
+        // identical messages from the same device aren't duplicated, but
+        // genuinely-different rows from a second device are preserved.
+        val key: (ChatRowExport) -> String = { r ->
+            "${r.t}|${r.role}|${r.content?.hashCode() ?: 0}|${r.toolCallId.orEmpty()}"
+        }
+        val combined = linkedMapOf<String, ChatRowExport>()
+        remote.lineSequence().filter { it.isNotBlank() }.mapNotNull(parseLine).forEach { combined[key(it)] = it }
+        local .lineSequence().filter { it.isNotBlank() }.mapNotNull(parseLine).forEach { combined[key(it)] = it }
+        return combined.values.sortedBy { it.t }
+            .joinToString("\n") { json.encodeToString(ChatRowExport.serializer(), it) }
+    }
+
+    private fun mergeManifests(remote: String, local: String): String {
+        val r = runCatching { manifestJson.decodeFromString(ManifestV2.serializer(), remote) }.getOrNull()
+            ?: return local
+        val l = runCatching { manifestJson.decodeFromString(ManifestV2.serializer(), local) }.getOrNull()
+            ?: return remote
+        val merged = ManifestV2(
+            version = maxOf(r.version, l.version),
+            lastSyncTsMillis = maxOf(r.lastSyncTsMillis, l.lastSyncTsMillis),
+        )
+        // Per-path: pick the entry with the higher ts (= newer write).
+        val allKeys = r.files.keys + l.files.keys
+        for (k in allKeys) {
+            val rv = r.files[k]; val lv = l.files[k]
+            merged.files[k] = when {
+                rv == null -> lv!!
+                lv == null -> rv
+                else -> if (lv.ts >= rv.ts) lv else rv
+            }
+        }
+        return manifestJson.encodeToString(ManifestV2.serializer(), merged)
+    }
+
+    private fun entryToWorkingRecord(entry: LearningJournal.Entry, deviceId: String): MemoryRecord {
         val scrubbed = SecretScrubber.scrub(entry.note)
         val src = "growth:${entry.kind}"
         val facets = buildList {
@@ -387,7 +468,7 @@ class MemorySync @Inject constructor(
         }
         return MemoryRecord.working(
             content = scrubbed, src = src, facets = facets,
-            ref = null, now = entry.tsMillis,
+            ref = null, now = entry.tsMillis, dev = deviceId,
         )
     }
 
@@ -460,6 +541,8 @@ class MemorySync @Inject constructor(
         val toolCallsJson: String? = null,
         val toolCallId: String? = null,
         val name: String? = null,
+        /** DeviceIdStore stamp identifying which Mythara install authored this row. */
+        val dev: String? = null,
     )
 
     companion object {

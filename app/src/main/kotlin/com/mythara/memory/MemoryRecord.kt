@@ -26,6 +26,9 @@ import kotlinx.serialization.Serializable
  *   sha      — SHA-256 prefix (24 chars) of `content` — dedup key across syncs
  *   ref      — optional back-link to source event (e.g. "msg:42", "obs:abc")
  *   seen     — reinforcement counter; bumped each time the same sha is observed
+ *   dev      — DeviceIdStore stamp (e.g. "pixel9pro-7k2m9pq3"); identifies which
+ *              Mythara install authored this line. Optional so older records pre-
+ *              dating M8.2.3 (and records pulled back via restore) stay readable.
  *
  * Mirrors the field discipline of github.com/rohitg00/agentmemory, adapted
  * for mobile: no embeddings stored on-device, no graph relations on disk
@@ -43,6 +46,8 @@ data class MemoryRecord(
     val sha: String,
     val ref: String? = null,
     val seen: Int = 1,
+    /** Per-install authorship stamp; null on legacy records. */
+    val dev: String? = null,
 ) {
     companion object {
         /** Compact, time-sortable ID. Not a real ULID — close enough for our scale. */
@@ -64,10 +69,12 @@ data class MemoryRecord(
             ref: String? = null,
             conf: Double = 1.0,
             now: Long = System.currentTimeMillis(),
+            dev: String? = null,
         ): MemoryRecord = MemoryRecord(
             id = newId(now), t = now, tier = Tier.Working.code,
             src = src, conf = conf, facets = facets,
             content = content, sha = shaHash(content), ref = ref,
+            dev = dev,
         )
 
         fun semantic(
@@ -78,10 +85,12 @@ data class MemoryRecord(
             conf: Double = 1.0,
             seen: Int = 1,
             now: Long = System.currentTimeMillis(),
+            dev: String? = null,
         ): MemoryRecord = MemoryRecord(
             id = newId(now), t = now, tier = Tier.Semantic.code,
             src = src, conf = conf, facets = facets,
             content = content, sha = shaHash(content), ref = ref, seen = seen,
+            dev = dev,
         )
     }
 }

@@ -87,8 +87,13 @@ class LearningVault @Inject constructor(
     /**
      * Translate a [LearningEntity] into the GitHub-bound wire format. The
      * embedding rides along as base64 of the LE-float32 bytes.
+     *
+     * @param dev DeviceIdStore stamp written into the record's `dev` field
+     *            so each line in the synced repo carries authorship from
+     *            this install. Null leaves the field absent for back-compat
+     *            with records written before M8.2.3.
      */
-    fun toMemoryRecord(entity: LearningEntity): MemoryRecord {
+    fun toMemoryRecord(entity: LearningEntity, dev: String? = null): MemoryRecord {
         val facets = decodeFacets(entity)
         val emb = entity.embedding?.let { android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP) }
         return MemoryRecord(
@@ -102,6 +107,7 @@ class LearningVault @Inject constructor(
             sha = entity.sha,
             ref = entity.ref,
             seen = entity.seen,
+            dev = dev,
         ).let {
             // MemoryRecord doesn't currently carry `emb` — store it as a
             // facet for now ("emb:<base64>" is too long; the actual emb
