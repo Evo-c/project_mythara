@@ -26,14 +26,37 @@ object SpeechRecognition {
 
     sealed interface Event {
         data class Partial(val text: String) : Event
-        data class Final(val text: String) : Event
+        /**
+         * Final transcript for the utterance.
+         *
+         * @param detectedLanguage BCP-47 tag returned by Android's
+         *   `SpeechRecognizer` when language detection is enabled
+         *   (Android 14+). On older OS versions this is null and the
+         *   caller should fall back to ML Kit (`LanguageDetector`)
+         *   or the system locale.
+         */
+        data class Final(val text: String, val detectedLanguage: String? = null) : Event
         data class Error(val code: Int, val message: String) : Event
         data object EndOfSpeech : Event
         data object Ready : Event
     }
 
-    fun listen(ctx: Context, language: String = "en-US"): Flow<Event> = callbackFlow {
+    /**
+     * Single-utterance recognition. When `autoDetect` is true and the OS
+     * supports it (API 34+), Mythara enables Android's native language
+     * detection — the result includes a BCP-47 tag in
+     * [Event.Final.detectedLanguage] which callers route to the TTS
+     * locale so replies are spoken in whatever language the user just
+     * spoke. On older OS versions we fall back to the explicit
+     * `language` parameter (caller default: `en-US`).
+     */
+    fun listen(
+        ctx: Context,
+        language: String = "en-US",
+        autoDetect: Boolean = true,
+    ): Flow<Event> = callbackFlow {
         val onDevice = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+        val canAutoDetect = autoDetect && Build.VERSION.SDK_INT >= 34
         val rec: SpeechRecognizer = if (onDevice) {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx)
         } else {
@@ -42,10 +65,19 @@ object SpeechRecognition {
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             if (onDevice) {
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            }
+            if (canAutoDetect) {
+                // Android 14+ language auto-detection. The recognizer
+                // returns the detected language in Bundle key
+                // RecognizerIntent.EXTRA_LANGUAGE. We still pass
+                // EXTRA_LANGUAGE as the hint so detection has a prior.
+                putExtra("android.speech.extra.ENABLE_LANGUAGE_DETECTION", true)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+            } else {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
             }
         }
 
@@ -62,7 +94,13 @@ object SpeechRecognition {
             override fun onResults(results: Bundle?) {
                 val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION).orEmpty()
                 val text = list.firstOrNull().orEmpty()
-                trySend(Event.Final(text))
+                // Android 14+ returns the detected language as a BCP-47
+                // tag under EXTRA_LANGUAGE on `Final`. May be null on
+                // older OSes or when detection was disabled.
+                val detected = runCatching {
+                    results?.getString(RecognizerIntent.EXTRA_LANGUAGE)
+                }.getOrNull()
+                trySend(Event.Final(text, detectedLanguage = detected))
                 close()
             }
             override fun onPartialResults(partial: Bundle?) {

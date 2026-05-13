@@ -26,6 +26,7 @@ vosk = "0.3.47"
 jna = "5.13.0"
 mediapipeText = "0.10.14"
 mediapipeGenAi = "0.10.21"
+mlkitLanguageId = "17.0.6"
 
 # Deferred — added back when their milestone lands:
 #   camerax  → M5 (take_photo tool)
@@ -95,6 +96,13 @@ mediapipe-tasks-text = { group = "com.google.mediapipe", name = "tasks-text", ve
 # Observe transcripts. Native runtime is ~30MB; the model itself
 # (Gemma 3 1B int4, ~530MB) is lazy-downloaded on first use.
 mediapipe-tasks-genai = { group = "com.google.mediapipe", name = "tasks-genai", version.ref = "mediapipeGenAi" }
+
+# ML Kit Language Identification — on-device BCP-47 tag detector across
+# 100+ languages. ~2MB native model, ~10ms inference. Drives:
+#   1. TTS locale selection on the assistant's reply (so a Spanish
+#      answer is spoken with the Spanish voice rather than English)
+#   2. cross-checking / fallback to the active Vosk language tag
+google-mlkit-language-id = { group = "com.google.mlkit", name = "language-id", version.ref = "mlkitLanguageId" }
 
 # Biometric / device-credential unlock at app entry
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }

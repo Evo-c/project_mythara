@@ -7,6 +7,7 @@ import com.mythara.agent.SpokenText
 import com.mythara.agent.Thinks
 import com.mythara.data.HistoryRepository
 import com.mythara.data.MessageRow
+import com.mythara.mic.LanguageDetector
 import com.mythara.mic.Tts
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +31,7 @@ class ChatViewModel @Inject constructor(
     private val agent: AgentLoop,
     private val history: HistoryRepository,
     private val tts: Tts,
+    private val languageDetector: LanguageDetector,
 ) : ViewModel() {
     init { tts.init() }
 
@@ -115,15 +117,24 @@ class ChatViewModel @Inject constructor(
                     }
                     is AgentLoop.Turn.Finished -> {
                         _ui.update { it.copy(streaming = null, thinking = false) }
-                        // Two-step normalisation before TTS:
-                        //  1. Thinks.strip   — remove <think>…</think> reasoning blocks
-                        //  2. SpokenText.forSpeech — strip markdown (bold/italic/code/
-                        //     headings/bullets/links/tables) so the speech engine
-                        //     doesn't read literal "asterisk asterisk".
+                        // Three-step normalisation before TTS:
+                        //  1. Thinks.strip            — remove <think>…</think> reasoning
+                        //  2. SpokenText.forSpeech    — strip markdown / emoji
+                        //  3. LanguageDetector        — auto-pick TTS Locale matching
+                        //                               the reply language (Hindi reply
+                        //                               → Hindi voice). Falls back to
+                        //                               the system default if ML Kit
+                        //                               returns `und` or the engine
+                        //                               doesn't have voice data.
                         val cleaned = Thinks.strip(turn.finalText)
                             .removeSuffix(" [hit max iterations]")
                         val spoken = SpokenText.forSpeech(cleaned)
-                        if (spoken.isNotBlank()) tts.speak(spoken)
+                        if (spoken.isNotBlank()) {
+                            launch {
+                                val locale = languageDetector.identifyLocale(spoken)
+                                tts.speak(spoken, locale)
+                            }
+                        }
                     }
                     is AgentLoop.Turn.Error -> _ui.update {
                         it.copy(streaming = null, thinking = false, errorBanner = turn.message)

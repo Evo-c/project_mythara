@@ -151,6 +151,11 @@ dependencies {
     // is lazy-downloaded into filesDir.
     implementation(libs.mediapipe.tasks.genai)
 
+    // ML Kit Language Identification — BCP-47 tag detection. Used to
+    // pick the right TTS Locale for the assistant's reply and to add
+    // language facets to Observe vault records.
+    implementation(libs.google.mlkit.language.id)
+
     // M5+ deps deferred until their milestones land:
     //   CameraX (take_photo), SQLCipher (Observe vault), Argon2 (Secret pw)
 }
