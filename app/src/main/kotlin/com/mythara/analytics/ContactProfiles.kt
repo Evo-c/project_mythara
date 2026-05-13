@@ -64,6 +64,18 @@ data class ContactProfileRow(
     @ColumnInfo(name = "big_five_last_updated_ms") val bigFiveLastUpdatedMs: Long? = null,
     /** JSON array of strings — short observed traits beyond Big Five. */
     @ColumnInfo(name = "notable_traits_json") val notableTraitsJson: String = "[]",
+    /**
+     * JSON array of strings — short, actionable "key points to note"
+     * surfaced at the top of the contact detail screen. Things the
+     * user would want remembered before their NEXT conversation with
+     * this person: recent life events, upcoming dates, sensitive
+     * topics, open threads / promises, recurring concerns. Generated
+     * by Gemma over the contact's vault content.
+     *
+     * Distinct from notable_traits which describes WHO the person is;
+     * key_points describes WHAT'S HAPPENING in their life right now.
+     */
+    @ColumnInfo(name = "key_points_json") val keyPointsJson: String = "[]",
     /** Last time the analytics builder produced / updated this row. */
     @ColumnInfo(name = "last_built_ms") val lastBuiltMs: Long = 0,
 ) {
@@ -97,7 +109,7 @@ interface ContactProfileDao {
     suspend fun clear()
 }
 
-@Database(entities = [ContactProfileRow::class], version = 1, exportSchema = false)
+@Database(entities = [ContactProfileRow::class], version = 2, exportSchema = false)
 abstract class ContactProfilesDb : RoomDatabase() {
     abstract fun profiles(): ContactProfileDao
 }

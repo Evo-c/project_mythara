@@ -255,14 +255,28 @@ private fun ProfileRow(p: ContactProfileRow, onTap: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        val topics = parseStringList(p.topTopicsJson)
-        if (topics.isNotEmpty()) {
+        // Prefer a single key-point teaser over topics on the row —
+        // the user landed on this list to remember WHAT'S HAPPENING
+        // before messaging, not browse interests. Falls back to topics
+        // when no key points are available.
+        val keyPoints = parseStringList(p.keyPointsJson)
+        if (keyPoints.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
             Text(
-                text = topics.joinToString(" · ") { it },
-                color = MytharaColors.FgMute,
+                text = "${Glyph.AccentBar} ${keyPoints.first()}",
+                color = MytharaColors.Bok,
                 style = MaterialTheme.typography.bodySmall,
             )
+        } else {
+            val topics = parseStringList(p.topTopicsJson)
+            if (topics.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = topics.joinToString(" · ") { it },
+                    color = MytharaColors.FgMute,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }
@@ -297,7 +311,55 @@ private fun ProfileDetail(p: ContactProfileRow) {
             }
         }
 
+        // Key points first — this is what the user is here for before
+        // starting a conversation. Bok-bordered to make it pop.
+        val keyPoints = parseStringList(p.keyPointsJson)
         Spacer(Modifier.height(16.dp))
+        if (keyPoints.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MytharaColors.Surface)
+                    .border(1.5.dp, MytharaColors.Bok, RoundedCornerShape(10.dp))
+                    .padding(14.dp),
+            ) {
+                Text(
+                    text = "${Glyph.DiamondFilled} before you message them",
+                    style = MaterialTheme.typography.labelLarge.copy(color = MytharaColors.Bok),
+                )
+                Spacer(Modifier.height(8.dp))
+                keyPoints.forEach { point ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Text(
+                            text = "${Glyph.AccentBar} ",
+                            color = MytharaColors.Bok,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            text = point,
+                            color = MytharaColors.Fg,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+        } else if (p.relationshipSummary != null) {
+            // Profile exists but no key-points extracted — show a soft
+            // hint so the user knows the section can populate.
+            Text(
+                text = "${Glyph.CircleOutline} no specific prep notes for ${p.displayName} right now — relationship summary below.",
+                color = MytharaColors.FgDim,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(bottom = 10.dp),
+            )
+        }
         DetailCard("${Glyph.DiamondOutline} stats") {
             val days = ((System.currentTimeMillis() - p.firstSeenMs) / (86_400_000L)).coerceAtLeast(0)
             DetailRow("interactions", "${p.messageCount}")

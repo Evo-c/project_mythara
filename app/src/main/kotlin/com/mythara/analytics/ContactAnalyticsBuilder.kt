@@ -132,6 +132,9 @@ class ContactAnalyticsBuilder @Inject constructor(
                 notableTraitsJson = if (infer != null)
                     json.encodeToString(ListSerializer(String.serializer()), infer.notableTraits)
                 else existing?.notableTraitsJson ?: "[]",
+                keyPointsJson = if (infer != null)
+                    json.encodeToString(ListSerializer(String.serializer()), infer.keyPoints)
+                else existing?.keyPointsJson ?: "[]",
                 lastBuiltMs = System.currentTimeMillis(),
             )
             repo.dao.upsert(row)
@@ -226,6 +229,7 @@ class ContactAnalyticsBuilder @Inject constructor(
         val agreeableness: Double?,
         val neuroticism: Double?,
         val notableTraits: List<String>,
+        val keyPoints: List<String>,
     )
 
     /**
@@ -248,7 +252,7 @@ class ContactAnalyticsBuilder @Inject constructor(
         }
         val text = buf.toString().take(MAX_CONTENT_CHARS)
         if (text.isBlank()) {
-            return InferenceResult(null, null, null, null, null, null, emptyList())
+            return InferenceResult(null, null, null, null, null, null, emptyList(), emptyList())
         }
 
         val summary = runCatching {
@@ -259,6 +263,7 @@ class ContactAnalyticsBuilder @Inject constructor(
         }.getOrNull()
 
         val bigFive = runCatching { runBigFive(displayName, text) }.getOrNull()
+        val keyPoints = runCatching { runKeyPoints(displayName, text) }.getOrDefault(emptyList())
 
         return InferenceResult(
             summary = summary?.trim()?.takeIf { it.isNotEmpty() },
@@ -268,8 +273,71 @@ class ContactAnalyticsBuilder @Inject constructor(
             agreeableness = bigFive?.agreeableness,
             neuroticism = bigFive?.neuroticism,
             notableTraits = bigFive?.traits ?: emptyList(),
+            keyPoints = keyPoints,
         )
     }
+
+    /**
+     * Extract "things to remember before talking to <Name> again" —
+     * recent life events, upcoming dates, sensitive topics, open
+     * threads / promises, recurring concerns. Output a JSON string
+     * array; parsed forgivingly.
+     *
+     * Distinct from Big Five (WHO they are) — these are temporal,
+     * conversational prep points (WHAT'S HAPPENING). Surfaced at the
+     * top of the contact detail screen.
+     */
+    private suspend fun runKeyPoints(displayName: String, text: String): List<String> {
+        val prompt = buildKeyPointsPrompt(displayName, text)
+        val raw = runCatching { gemma.summarise(prompt, maxLen = KEY_POINTS_MAX_LEN) }.getOrNull()
+            ?: return emptyList()
+        val arr = extractFirstJsonArray(raw) ?: return emptyList()
+        return runCatching {
+            (json.parseToJsonElement(arr) as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.content?.trim()?.takeIf { s -> s.isNotEmpty() } }
+                ?.map { it.take(MAX_KEY_POINT_LEN) }
+                ?.take(MAX_KEY_POINTS)
+                ?: emptyList()
+        }.getOrDefault(emptyList())
+    }
+
+    private fun extractFirstJsonArray(text: String): String? {
+        val start = text.indexOf('[')
+        if (start < 0) return null
+        var depth = 0
+        var inString = false
+        var escape = false
+        for (i in start until text.length) {
+            val c = text[i]
+            if (escape) { escape = false; continue }
+            if (c == '\\') { escape = true; continue }
+            if (c == '"') { inString = !inString; continue }
+            if (inString) continue
+            if (c == '[') depth++
+            else if (c == ']') {
+                depth--
+                if (depth == 0) return text.substring(start, i + 1)
+            }
+        }
+        return null
+    }
+
+    private fun buildKeyPointsPrompt(displayName: String, text: String): String =
+        "Extract 3-7 SHORT actionable points the user would want to remember BEFORE their next conversation with $displayName. " +
+            "Examples of good points:\n" +
+            "  • recent life events (\"started a new job at Stripe\", \"just had a baby\", \"moving to Boston\")\n" +
+            "  • upcoming dates (\"birthday on May 23\", \"trip to Spain next month\", \"exam Friday\")\n" +
+            "  • sensitive topics (\"avoid mentioning their ex\", \"recent loss in family\")\n" +
+            "  • open threads (\"the user said they'd send the book recommendation\", \"hasn't replied to last 3 messages\")\n" +
+            "  • recurring concerns (\"stressed about PhD thesis defense\")\n\n" +
+            "Skip:\n" +
+            "  • generic personality (that's in Big Five separately)\n" +
+            "  • trivial preferences (\"they like coffee\")\n" +
+            "  • anything older than 2 months unless still clearly relevant\n" +
+            "  • speculation — only points clearly supported by the snippets\n\n" +
+            "Return ONLY a JSON array of strings. Each string ≤ 80 chars. No prose, no markdown, no code fences. " +
+            "If nothing meaningful is supported by the snippets, return [].\n\n" +
+            "Snippets:\n```\n$text\n```\n\nReturn the JSON array now."
 
     private data class BigFiveOut(
         val openness: Double?,
@@ -352,6 +420,9 @@ class ContactAnalyticsBuilder @Inject constructor(
         private const val MAX_CONTENT_CHARS = 4_000
         private const val SUMMARY_MAX_LEN = 600
         private const val BIG_FIVE_MAX_LEN = 600
+        private const val KEY_POINTS_MAX_LEN = 800
+        private const val MAX_KEY_POINTS = 7
+        private const val MAX_KEY_POINT_LEN = 120
         private const val REINFER_INTERVAL_MS = 24L * 3600L * 1000L // re-infer at most once a day
         private const val REINFER_GROW_RATIO = 1.5                  // re-infer when sample grew 50%+
     }

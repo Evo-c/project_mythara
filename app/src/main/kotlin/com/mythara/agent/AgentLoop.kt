@@ -970,10 +970,22 @@ class AgentLoop @Inject constructor(
         if (topics.isNotEmpty()) {
             parts.add("Topics the user often discusses with them: " + topics.joinToString(", "))
         }
+        val keyPoints = parseJsonStringList(profile.keyPointsJson)
+        if (keyPoints.isNotEmpty()) {
+            // Key points are CONTEXTUAL ("what's happening in their
+            // life right now") and can be referenced in the reply
+            // when relevant. e.g. if a key point is "stressed about
+            // PhD thesis defense" and they message about feeling
+            // overwhelmed, the reply can lean into that — without
+            // ever quoting the key-point list itself.
+            parts.add("Recent context worth weaving in if naturally relevant: " + keyPoints.joinToString("; "))
+        }
         if (parts.isEmpty()) return ""
         return "\n\n— What Lumi knows about ${profile.displayName} —\n" + parts.joinToString("\n") + "\n" +
-            "Use these to TUNE your reply — don't paraphrase them back to the recipient, don't mention them explicitly. " +
-            "They're context for picking the right register and energy for THIS reply, nothing more."
+            "Use these to TUNE your reply — don't paraphrase them back to the recipient, don't mention them explicitly, " +
+            "don't recite this list. If a 'recent context' item is DIRECTLY relevant to what they just messaged, you may " +
+            "naturally acknowledge it (\"hope the thesis defense is going okay\"). Otherwise these are picking-the-right-" +
+            "register context, nothing more."
     }
 
     private fun fmt(v: Double?): String = if (v == null) "?" else "%.2f".format(v)
