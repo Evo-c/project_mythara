@@ -140,7 +140,7 @@ class AgentLoop @Inject constructor(
         loop@ while (iter < MAX_ITERATIONS) {
             iter++
 
-            val historyMessages: List<ChatMessage> = history.dao.listAll().map { row ->
+            val rawHistory: List<ChatMessage> = history.dao.listAll().map { row ->
                 ChatMessage(
                     role = row.role,
                     content = row.content,
@@ -149,6 +149,21 @@ class AgentLoop @Inject constructor(
                     name = row.name,
                 )
             }
+            // Defensive sanitiser — MiniMax 400s with code 2013
+            // ("tool call result does not follow tool call") if the
+            // history ever has an orphan `role:tool` message or an
+            // assistant `tool_calls` message whose results are missing.
+            // That can happen when:
+            //   - the agent loop crashed mid-iteration (NPE, kill, OOM)
+            //     leaving a half-finished pair
+            //   - a notification-auto-process or wake-query fires
+            //     before the previous turn's tool results were
+            //     persisted
+            //   - manual history edits during dev
+            // Once a bad pair lands in the table, every subsequent
+            // turn 400s — bricks chat until the user clears history.
+            // Sanitise on every send so we self-heal.
+            val historyMessages: List<ChatMessage> = sanitizeHistory(rawHistory)
             // Prepend system messages (notif triage hint first if any,
             // then mood context, then recalled facts) so MiniMax sees
             // every framing layer before persisted chat history.
@@ -245,6 +260,92 @@ class AgentLoop @Inject constructor(
         // Hit the iteration cap. Surface a soft-stop so the user sees a
         // bounded conversation instead of an infinite-loop bill.
         emit(Turn.Finished(lastAssistantText + " [hit max iterations]", iterations = iter, userMoodTrend = moodTrend))
+    }
+
+    /**
+     * Walk the history and drop:
+     *  - `role:tool` messages whose `tool_call_id` isn't claimed by an
+     *    earlier `role:assistant` with that exact id in its tool_calls
+     *  - `role:assistant` messages whose `tool_calls` weren't ALL
+     *    answered (i.e. at least one expected `role:tool` reply is
+     *    missing somewhere later in history)
+     *
+     * Preserves ordering otherwise. Returns a new list; never mutates
+     * the input. Mirrors the OpenAI / MiniMax wire contract that every
+     * tool_call must have exactly one matching tool result, immediately
+     * following the assistant turn (with no user/system interleaved).
+     */
+    private fun sanitizeHistory(history: List<ChatMessage>): List<ChatMessage> {
+        if (history.isEmpty()) return history
+
+        // Pass 1: collect every assistant-tool-calls turn and figure
+        // out which of its tool_call ids have a matching `role:tool`
+        // reply downstream. Drop the assistant turn if ANY are missing.
+        // A "matching" reply has to come before the next non-tool
+        // message (user / assistant) — anything else means the loop
+        // never completed.
+        data class CallSite(val asstIdx: Int, val ids: Set<String>)
+        val callSites = mutableListOf<CallSite>()
+        for ((idx, msg) in history.withIndex()) {
+            val ids = msg.toolCalls?.takeIf { it.isNotEmpty() }?.map { it.id }?.toSet()
+            if (msg.role == "assistant" && !ids.isNullOrEmpty()) {
+                callSites.add(CallSite(idx, ids))
+            }
+        }
+        val badAssistantIdx = mutableSetOf<Int>()
+        val orphanToolIdx = mutableSetOf<Int>()
+        // For each call site, scan forward for matching tool replies
+        // until we hit something that isn't a tool message — that's
+        // the boundary of "this assistant's tool block".
+        val claimedToolIdx = mutableSetOf<Int>()
+        for (site in callSites) {
+            val seen = mutableSetOf<String>()
+            var i = site.asstIdx + 1
+            while (i < history.size && history[i].role == "tool") {
+                val tcid = history[i].toolCallId
+                if (tcid != null && tcid in site.ids) {
+                    seen += tcid
+                    claimedToolIdx += i
+                }
+                i++
+            }
+            if (seen.size < site.ids.size) {
+                // Missing at least one — assistant turn is dangling.
+                badAssistantIdx += site.asstIdx
+            }
+        }
+        // Pass 2: every `role:tool` whose index isn't claimed by ANY
+        // call site is an orphan.
+        for ((idx, msg) in history.withIndex()) {
+            if (msg.role == "tool" && idx !in claimedToolIdx) {
+                orphanToolIdx += idx
+            }
+        }
+
+        if (badAssistantIdx.isEmpty() && orphanToolIdx.isEmpty()) {
+            return history
+        }
+        // If a dangling assistant turn is dropped, its (partially-
+        // answered) tool messages must also go — otherwise MiniMax
+        // sees orphan tool messages with no preceding tool_calls.
+        val dropToolForDroppedAsst = mutableSetOf<Int>()
+        for (site in callSites) {
+            if (site.asstIdx in badAssistantIdx) {
+                var i = site.asstIdx + 1
+                while (i < history.size && history[i].role == "tool") {
+                    dropToolForDroppedAsst += i
+                    i++
+                }
+            }
+        }
+        val toDrop = badAssistantIdx + orphanToolIdx + dropToolForDroppedAsst
+        android.util.Log.w(
+            TAG,
+            "sanitiser dropping ${toDrop.size} message(s): " +
+                "bad-asst=${badAssistantIdx.size} orphan-tool=${orphanToolIdx.size} " +
+                "asst-cascade=${dropToolForDroppedAsst.size}",
+        )
+        return history.filterIndexed { idx, _ -> idx !in toDrop }
     }
 
     private fun encodeToolCalls(calls: List<ToolCall>): String =
