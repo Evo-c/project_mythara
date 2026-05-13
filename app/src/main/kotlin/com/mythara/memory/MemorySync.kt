@@ -73,6 +73,7 @@ class MemorySync @Inject constructor(
         val ok: Boolean,
         val message: String,
         val learningsRestored: Int = 0,
+        val vaultRecordsRestored: Int = 0,
         val chatRowsRestored: Int = 0,
         val settingsRestored: Boolean = false,
         val filesRead: List<String> = emptyList(),
@@ -193,8 +194,40 @@ class MemorySync @Inject constructor(
                 for (r in records) vault.markSynced(r.id, syncTs)
             }
 
-            // working-tier records (raw transcripts) are deliberately NOT
-            // synced; leave them as unsynced=true forever in the local vault.
+            // -- vault/working/<YYYY-MM-DD>.jsonl  (M5 part 2c)
+            //    Working-tier vault rows whose source is *not* a raw
+            //    Observe transcript — today that's notifications (src
+            //    `notif:<pkg>`) and chat-derived working observations
+            //    once we add them. Backing these up is the long-term
+            //    memory contract: a fresh install on a new device
+            //    should be able to pull this file and re-learn the
+            //    user's notification history via SemanticRecall.
+            //
+            //    Privacy gate: src starting with `observe:transcript`
+            //    or `observe:audio` stays local-only — raw on-device
+            //    capture must not leave the device. The vault holds
+            //    those rows so the local pipeline can promote them,
+            //    but they're never serialised to GitHub.
+            val workingTierSyncable = unsynced.filter { entity ->
+                entity.tier == Tier.Working.code && isWorkingSrcSyncable(entity.src)
+            }
+            if (workingTierSyncable.isNotEmpty()) {
+                val byDay = workingTierSyncable.groupBy { isoLocalDate(it.tsMillis) }
+                for ((day, records) in byDay) {
+                    val body = records.joinToString("\n") { entity ->
+                        json.encodeToString(MemoryRecord.serializer(), vault.toMemoryRecord(entity, dev = deviceId))
+                    }
+                    val path = "vault/${Tier.Working.dir}/$day.jsonl"
+                    putWithCache(client, cfg, path, body, manifest,
+                        "mythara: vault/working/$day (+${records.size})", written, skipped)
+                    val syncTs = System.currentTimeMillis()
+                    for (r in records) vault.markSynced(r.id, syncTs)
+                }
+            }
+
+            // Raw working-tier records that *aren't* syncable (Observe
+            // transcripts) deliberately stay unsynced=false forever in
+            // the local vault.
         }
 
         // ---- tier placeholders for episodic/procedural. semantic/ has
@@ -281,13 +314,16 @@ class MemorySync @Inject constructor(
         }.getOrElse { return RestoreReport(ok = false, message = "Manifest is malformed.") }
 
         var learnings = 0
+        var vaultRecords = 0
         var chatRows = 0
         var settingsOk = false
         val filesRead = mutableListOf("manifest.json")
 
         // working/<day>.jsonl files in manifest → LearningJournal.replaceAll
-        val workingRecords = mutableListOf<MemoryRecord>()
-        for (path in manifest.files.keys.filter { it.startsWith("${Tier.Working.dir}/") && it.endsWith(".jsonl") }) {
+        val workingJournalRecords = mutableListOf<MemoryRecord>()
+        for (path in manifest.files.keys.filter {
+            it.startsWith("${Tier.Working.dir}/") && it.endsWith(".jsonl")
+        }) {
             val r = client.readFile(cfg.owner, cfg.repo, path)
             if (r is Outcome.Ok) {
                 r.value.text.lineSequence()
@@ -295,17 +331,34 @@ class MemorySync @Inject constructor(
                     .mapNotNull {
                         runCatching { json.decodeFromString(MemoryRecord.serializer(), it) }.getOrNull()
                     }
-                    .forEach { workingRecords.add(it) }
+                    .forEach { workingJournalRecords.add(it) }
                 filesRead.add(path)
             }
         }
-        if (workingRecords.isNotEmpty()) {
-            val entries = workingRecords.map {
+        if (workingJournalRecords.isNotEmpty()) {
+            val entries = workingJournalRecords.map {
                 LearningJournal.Entry(tsMillis = it.t, kind = it.src, note = it.content)
             }
             journal.replaceAll(entries)
             learnings = entries.size
         }
+
+        // vault/working/<day>.jsonl  — working-tier vault rows
+        // (notifications etc.). REPLACE-into-vault semantics: we add
+        // each restored record; `vault.add` is sha-deduped so a
+        // re-restore over an existing install is idempotent — same
+        // content reinforces instead of double-inserts.
+        vaultRecords += restoreVaultTier(
+            client, cfg, manifest, "vault/${Tier.Working.dir}/", Tier.Working, filesRead,
+        )
+        // semantic/<topic>.jsonl — durable facts
+        vaultRecords += restoreVaultTier(
+            client, cfg, manifest, "${Tier.Semantic.dir}/", Tier.Semantic, filesRead,
+        )
+        // episodic/<week>.jsonl — weekly summaries
+        vaultRecords += restoreVaultTier(
+            client, cfg, manifest, "${Tier.Episodic.dir}/", Tier.Episodic, filesRead,
+        )
 
         // settings/preferences.json
         val prefsPath = "settings/preferences.json"
@@ -360,12 +413,62 @@ class MemorySync @Inject constructor(
 
         return RestoreReport(
             ok = true,
-            message = "Restored $learnings learning(s), $chatRows chat row(s), settings=${if (settingsOk) "ok" else "skipped"}.",
+            message = "Restored $learnings journal entry/ies, $vaultRecords vault record(s), $chatRows chat row(s), settings=${if (settingsOk) "ok" else "skipped"}.",
             learningsRestored = learnings,
+            vaultRecordsRestored = vaultRecords,
             chatRowsRestored = chatRows,
             settingsRestored = settingsOk,
             filesRead = filesRead,
         )
+    }
+
+    /**
+     * Generic per-tier restorer. Reads every `<prefix>*.jsonl` in the
+     * manifest, decodes each line as a [MemoryRecord], and calls
+     * [LearningVault.add] with the tier flipped to [targetTier].
+     *
+     * Idempotent: re-running over an existing install reinforces by
+     * sha rather than double-inserting (the vault's sha index does the
+     * work). The tier is forced from [targetTier] not from the record
+     * itself — defensive against a malformed JSONL line claiming a
+     * different tier than the directory it lived in.
+     */
+    private suspend fun restoreVaultTier(
+        client: GitHubClient,
+        cfg: MemorySettings.Snapshot,
+        manifest: ManifestV2,
+        pathPrefix: String,
+        targetTier: Tier,
+        filesRead: MutableList<String>,
+    ): Int {
+        var added = 0
+        for (path in manifest.files.keys.filter { it.startsWith(pathPrefix) && it.endsWith(".jsonl") }) {
+            val r = client.readFile(cfg.owner, cfg.repo, path)
+            if (r !is Outcome.Ok) continue
+            filesRead.add(path)
+            r.value.text.lineSequence()
+                .filter { it.isNotBlank() }
+                .mapNotNull {
+                    runCatching { json.decodeFromString(MemoryRecord.serializer(), it) }.getOrNull()
+                }
+                .forEach { record ->
+                    runCatching {
+                        val inserted = vault.add(
+                            content = record.content,
+                            tier = targetTier,
+                            src = record.src,
+                            facets = record.facets,
+                            embedding = null, // emb not in wire shape today
+                            embModel = null,
+                            conf = record.conf,
+                            ref = record.ref,
+                            now = record.t,
+                        )
+                        if (inserted) added++
+                    }
+                }
+        }
+        return added
     }
 
     private suspend fun putWithCache(
@@ -430,11 +533,28 @@ class MemorySync @Inject constructor(
         val parseLine: (String) -> MemoryRecord? = { line ->
             runCatching { json.decodeFromString(MemoryRecord.serializer(), line) }.getOrNull()
         }
+        // Score function: prefer the row that's been reinforced more
+        // (`seen` carries the heaviest weight) and has higher confidence.
+        // Protects against local decay-passes clobbering a remote record
+        // that this device hasn't seen recently — the GitHub copy IS
+        // the long-term backup, and a stale local low-conf row must
+        // never win against a healthy remote high-conf row.
+        //
+        // The previous policy was "local always wins" which made decay
+        // + dedup compactions destructive across the sync round-trip.
+        // Now: dedup-merged keepers (higher `seen`) still win — they're
+        // the stronger version — while decayed losers lose to the
+        // pristine remote.
+        val score: (MemoryRecord) -> Double = { r -> r.seen + r.conf * 10.0 }
         val combined = linkedMapOf<String, MemoryRecord>()
-        // Remote first so local (this device's view) overrides on id collision
-        // — local writes are typically newer reinforcement bumps.
-        remote.lineSequence().filter { it.isNotBlank() }.mapNotNull(parseLine).forEach { combined[it.id] = it }
-        local .lineSequence().filter { it.isNotBlank() }.mapNotNull(parseLine).forEach { combined[it.id] = it }
+        fun consider(record: MemoryRecord) {
+            val prev = combined[record.id]
+            if (prev == null || score(record) >= score(prev)) {
+                combined[record.id] = record
+            }
+        }
+        remote.lineSequence().filter { it.isNotBlank() }.mapNotNull(parseLine).forEach(::consider)
+        local .lineSequence().filter { it.isNotBlank() }.mapNotNull(parseLine).forEach(::consider)
         return combined.values.sortedBy { it.t }
             .joinToString("\n") { json.encodeToString(MemoryRecord.serializer(), it) }
     }
@@ -476,6 +596,24 @@ class MemorySync @Inject constructor(
             }
         }
         return manifestJson.encodeToString(ManifestV2.serializer(), merged)
+    }
+
+    /**
+     * Decide whether a working-tier vault row's `src` is safe to upload
+     * to the user's GitHub repo. Allowlist on the known safe prefixes
+     * (notifications, chat-derived working obs, growth) rather than a
+     * denylist on `observe:*` — additive new sources stay local-only
+     * by default until explicitly opted in.
+     *
+     * Privacy contract: anything captured by the Observe pipeline
+     * (raw audio frames, ASR transcripts, recogniser intermediate
+     * states) MUST stay local. That's the whole point of Observe
+     * being on-device.
+     */
+    private fun isWorkingSrcSyncable(src: String): Boolean {
+        return src.startsWith("notif:") ||
+            src.startsWith("growth:") ||
+            src.startsWith("chat:")
     }
 
     private fun entryToWorkingRecord(entry: LearningJournal.Entry, deviceId: String): MemoryRecord {

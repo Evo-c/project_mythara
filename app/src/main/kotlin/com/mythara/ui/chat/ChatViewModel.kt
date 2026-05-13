@@ -35,6 +35,9 @@ class ChatViewModel @Inject constructor(
     lumiListenerStore: com.mythara.wake.LumiListenerStore,
     val micBroker: com.mythara.mic.MicBroker,
     notifAutoProcessStore: com.mythara.services.NotificationAutoProcessStore,
+    private val vault: com.mythara.secret.observe.vault.LearningVault,
+    private val embedder: com.mythara.secret.observe.embed.LocalEmbedder,
+    private val memorySyncScheduler: com.mythara.memory.MemorySyncScheduler,
     @dagger.hilt.android.qualifiers.ApplicationContext private val appCtx: android.content.Context,
 ) : ViewModel() {
     // `_ui` is declared up top so any init block can safely call
@@ -84,13 +87,24 @@ class ChatViewModel @Inject constructor(
                         .collect { r ->
                             if (r.ongoing) return@collect
                             if (r.packageName == selfPkg) return@collect
-                            // Drop if we're mid-conversation; the user
-                            // will hear the next notification when Lumi
-                            // is idle. The buffer is dropped here
-                            // intentionally — we don't queue, because
-                            // stacking up summaries while the user is
-                            // talking would make the device feel
-                            // possessed.
+                            // ALWAYS write to long-term memory first —
+                            // even if we drop the spoken-summary step
+                            // because Lumi is mid-reply, the user's
+                            // memory of "Mom messaged me earlier today"
+                            // should still be recoverable from the
+                            // vault and the GitHub backup.
+                            persistNotificationToVault(r)
+                            // Nudge MemorySyncScheduler to push within
+                            // ~an hour. No-op when sync isn't
+                            // configured or a recent sync already ran.
+                            runCatching { memorySyncScheduler.fireNowIfStale() }
+                            // Drop the *agent-loop* dispatch if we're
+                            // mid-conversation; the user will hear the
+                            // next notification when Lumi is idle. The
+                            // buffer is dropped here intentionally — we
+                            // don't queue, because stacking up
+                            // summaries while the user is talking would
+                            // make the device feel possessed.
                             val u = _ui.value
                             if (u.thinking || u.speaking) return@collect
                             val formatted = formatNotificationForAgent(r) ?: return@collect
@@ -98,6 +112,69 @@ class ChatViewModel @Inject constructor(
                         }
                 }
             }
+        }
+    }
+
+    /**
+     * Write a notification into the [LearningVault] as a working-tier
+     * record so it ride-alongs the durable-memory pipeline:
+     *
+     *  - SemanticRecall can surface it on later chat turns ("did Mom
+     *    text me earlier?")
+     *  - MemorySync backs it up to the user's private GitHub repo, so a
+     *    new Mythara install restores the full notification history
+     *  - SelfOrganizer's nightly episodic-promotion pass clusters
+     *    similar notifications into weekly summaries automatically
+     *
+     * Embedded with USE-Lite when the model is available so cosine recall
+     * works; falls back to facet+content match otherwise.
+     *
+     * Caller already filtered ongoing + self-package. We also drop
+     * notifications with no human-readable content here — those are
+     * almost certainly silent system pings (sync done, location used)
+     * and aren't worth a vault row.
+     */
+    private suspend fun persistNotificationToVault(
+        r: com.mythara.services.NotificationListener.Recent,
+    ) {
+        val title = r.title?.trim().orEmpty()
+        val body = r.text?.trim().orEmpty()
+        val sub = r.subText?.trim().orEmpty()
+        if (title.isEmpty() && body.isEmpty() && sub.isEmpty()) return
+        val pkg = r.packageName
+        // Same format the chat-side dispatch uses, minus the [notif]
+        // wire prefix — that's only meaningful inside AgentLoop.
+        val content = buildString {
+            append(pkg.substringAfterLast('.', pkg))
+            if (title.isNotEmpty()) append(" · ").append(title)
+            if (sub.isNotEmpty()) append(" · ").append(sub)
+            if (body.isNotEmpty()) append(": ").append(body)
+        }
+        val facets = buildList {
+            add("kind:notification")
+            add("pkg:$pkg")
+            if (title.isNotEmpty()) add("title:${title.take(80)}")
+        }
+        val embedding = if (embedder.isReady()) {
+            runCatching { embedder.embed(content) }.getOrNull()
+        } else null
+        runCatching {
+            vault.add(
+                content = content,
+                tier = com.mythara.memory.Tier.Working,
+                src = "notif:$pkg",
+                facets = facets,
+                embedding = embedding,
+                embModel = if (embedding != null) com.mythara.secret.observe.embed.EmbeddingsModelStore.MODEL_ID else null,
+                conf = 0.7,
+                ref = "notifkey:${r.key}",
+                now = r.postTimeMs.takeIf { it > 0 } ?: System.currentTimeMillis(),
+            )
+        }.onFailure { e ->
+            android.util.Log.w(
+                "Mythara/Notif",
+                "vault.add failed for ${r.packageName}: ${e.message}",
+            )
         }
     }
 

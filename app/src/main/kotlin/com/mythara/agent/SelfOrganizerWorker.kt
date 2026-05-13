@@ -143,7 +143,14 @@ class SelfOrganizerWorker @AssistedInject constructor(
             val newestLastSeen = dupes.maxOf { it.lastSeenMs }
             val bestEmbedded = dupes.firstOrNull { it.embedding != null && it.id != keeper.id }
             val maxConf = dupes.maxOf { it.conf }
-            // Merge keeper carries the union of properties.
+            // Merge keeper carries the union of properties. Flip
+            // `synced` back to false so the next MemorySync.runSync
+            // re-uploads the consolidated row — otherwise the GitHub
+            // copy would still show the pre-merge `seen`/`conf` and
+            // the merger's "more reinforced wins" rule wouldn't have
+            // anything fresher to pick. This is what ensures
+            // compaction never drops memory: the strongest version
+            // wins both locally AND on backup.
             dao.update(
                 keeper.copy(
                     seen = totalSeen,
@@ -151,6 +158,8 @@ class SelfOrganizerWorker @AssistedInject constructor(
                     embedding = keeper.embedding ?: bestEmbedded?.embedding,
                     embModel = keeper.embModel ?: bestEmbedded?.embModel,
                     conf = maxConf,
+                    synced = false,
+                    syncedAtMs = null,
                 ),
             )
             for (dup in dupes) {

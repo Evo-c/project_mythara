@@ -59,7 +59,10 @@ class MemorySyncWorker @AssistedInject constructor(
 }
 
 @Singleton
-class MemorySyncScheduler @Inject constructor(@ApplicationContext private val ctx: Context) {
+class MemorySyncScheduler @Inject constructor(
+    @ApplicationContext private val ctx: Context,
+    private val memorySettings: MemorySettings,
+) {
     private val wm: WorkManager get() = WorkManager.getInstance(ctx)
 
     fun start() {
@@ -99,5 +102,24 @@ class MemorySyncScheduler @Inject constructor(@ApplicationContext private val ct
             ExistingWorkPolicy.REPLACE,
             req,
         )
+    }
+
+    /**
+     * Fire a one-shot sync only if the last successful sync is older
+     * than [maxStaleMs]. No-op when sync isn't configured (no PAT) or
+     * isn't enabled. Used by the notification-arrival path so a real
+     * push notification gets backed up to GitHub within ~an hour even
+     * if the 24h periodic sync hasn't ticked yet.
+     *
+     * Idempotent — the UNIQUE_ONESHOT policy collapses bursts of calls
+     * into a single enqueued worker.
+     */
+    suspend fun fireNowIfStale(maxStaleMs: Long = 60L * 60 * 1000) {
+        val snap = memorySettings.snapshot()
+        if (!snap.enabled || !snap.configured) return
+        val lastSync = snap.lastSyncTs
+        val now = System.currentTimeMillis()
+        if (lastSync > 0 && (now - lastSync) < maxStaleMs) return
+        fireNow(force = false)
     }
 }
