@@ -989,6 +989,15 @@ class AgentLoop @Inject constructor(
         profile.userNotes?.trim()?.takeIf { it.isNotBlank() }?.let {
             parts.add("⚠ USER'S NOTES (authoritative — these OVERRIDE any inference below):\n$it")
         }
+        // Personality insights = Gemma's distilled Big Five + traits
+        // into actionable messaging guidance ("How to message X:
+        // keep replies …; lean into …; avoid …"). Surfaced HIGH —
+        // right after user notes — because it's the model's
+        // pre-digested take on tone, far more useful than raw
+        // Big Five scores alone.
+        profile.personalityInsights?.trim()?.takeIf { it.isNotBlank() }?.let {
+            parts.add("Personality insights: $it")
+        }
         profile.relationshipSummary?.takeIf { it.isNotBlank() }?.let {
             parts.add("Relationship summary: $it")
         }

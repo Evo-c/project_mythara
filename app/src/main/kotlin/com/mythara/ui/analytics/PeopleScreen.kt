@@ -498,6 +498,17 @@ private fun ProfileDetail(
             }
         }
 
+        p.personalityInsights?.takeIf { it.isNotBlank() }?.let { insights ->
+            Spacer(Modifier.height(12.dp))
+            DetailCard("${Glyph.DiamondOutline} personality insights · how to message them") {
+                Text(
+                    text = insights,
+                    color = MytharaColors.Fg,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+
         val traits = parseStringList(p.notableTraitsJson)
         if (traits.isNotEmpty()) {
             Spacer(Modifier.height(12.dp))

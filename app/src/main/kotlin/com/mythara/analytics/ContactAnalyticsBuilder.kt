@@ -202,6 +202,7 @@ class ContactAnalyticsBuilder @Inject constructor(
                 // User-authored notes are NEVER overwritten by the
                 // analytics builder — preserve from the previous row.
                 userNotes = existing?.userNotes,
+                personalityInsights = infer?.personalityInsights ?: existing?.personalityInsights,
                 lastBuiltMs = System.currentTimeMillis(),
             )
             repo.dao.upsert(row)
@@ -304,6 +305,7 @@ class ContactAnalyticsBuilder @Inject constructor(
         val neuroticism: Double?,
         val notableTraits: List<String>,
         val keyPoints: List<String>,
+        val personalityInsights: String?,
     )
 
     /**
@@ -326,7 +328,7 @@ class ContactAnalyticsBuilder @Inject constructor(
         }
         val text = buf.toString().take(MAX_CONTENT_CHARS)
         if (text.isBlank()) {
-            return InferenceResult(null, null, null, null, null, null, emptyList(), emptyList())
+            return InferenceResult(null, null, null, null, null, null, emptyList(), emptyList(), null)
         }
 
         val summary = runCatching {
@@ -338,6 +340,13 @@ class ContactAnalyticsBuilder @Inject constructor(
 
         val bigFive = runCatching { runBigFive(displayName, text) }.getOrNull()
         val keyPoints = runCatching { runKeyPoints(displayName, text) }.getOrDefault(emptyList())
+        // Personality insights are downstream of Big Five — they
+        // synthesise the scores + traits into actionable messaging
+        // guidance. Only run when Big Five succeeded; otherwise
+        // there's nothing to synthesise.
+        val personalityInsights = if (bigFive != null) {
+            runCatching { runPersonalityInsights(displayName, bigFive) }.getOrNull()
+        } else null
 
         return InferenceResult(
             summary = summary?.trim()?.takeIf { it.isNotEmpty() },
@@ -348,7 +357,49 @@ class ContactAnalyticsBuilder @Inject constructor(
             neuroticism = bigFive?.neuroticism,
             notableTraits = bigFive?.traits ?: emptyList(),
             keyPoints = keyPoints,
+            personalityInsights = personalityInsights,
         )
+    }
+
+    /**
+     * Distil Big Five scores + traits into one short paragraph of
+     * actionable messaging guidance. Output shape:
+     *   "How to message <name>: keep replies … ; lean into … ;
+     *    avoid … ."
+     * Designed to be dropped verbatim into the auto-reply system
+     * prompt — no JSON, no schema, just the paragraph.
+     *
+     * Returns null on Gemma error or empty output.
+     */
+    private suspend fun runPersonalityInsights(
+        displayName: String,
+        bigFive: BigFiveOut,
+    ): String? {
+        val prompt = buildPersonalityInsightsPrompt(displayName, bigFive)
+        val raw = runCatching { gemma.runRaw(prompt, maxLen = INSIGHTS_MAX_LEN) }.getOrNull()
+            ?: return null
+        return raw.trim().takeIf { it.isNotEmpty() && it.length >= 20 }
+    }
+
+    private fun buildPersonalityInsightsPrompt(displayName: String, bigFive: BigFiveOut): String {
+        val traits = bigFive.traits.joinToString(", ")
+        return "Given this Big Five read on $displayName:\n" +
+            "  openness=${fmtScore(bigFive.openness)}\n" +
+            "  conscientiousness=${fmtScore(bigFive.conscientiousness)}\n" +
+            "  extraversion=${fmtScore(bigFive.extraversion)}\n" +
+            "  agreeableness=${fmtScore(bigFive.agreeableness)}\n" +
+            "  neuroticism=${fmtScore(bigFive.neuroticism)}\n" +
+            "  notable traits: $traits\n\n" +
+            "Write ONE concise paragraph (60-90 words) of actionable messaging guidance for someone writing back to $displayName. " +
+            "Lead with 'How to message $displayName:' then a few semicolon-separated tips covering: tone, length, what to lean into, what to avoid. " +
+            "No bullet points, no markdown, no preamble. Just the paragraph."
+    }
+
+    private fun fmtScore(v: Double?): String = when {
+        v == null -> "?"
+        v >= 0.65 -> "${"%.2f".format(v)} (high)"
+        v <= 0.35 -> "${"%.2f".format(v)} (low)"
+        else -> "${"%.2f".format(v)} (mid)"
     }
 
     /**
@@ -513,6 +564,7 @@ class ContactAnalyticsBuilder @Inject constructor(
         private const val SUMMARY_MAX_LEN = 600
         private const val BIG_FIVE_MAX_LEN = 600
         private const val KEY_POINTS_MAX_LEN = 800
+        private const val INSIGHTS_MAX_LEN = 600
         private const val MAX_KEY_POINTS = 7
         private const val MAX_KEY_POINT_LEN = 120
         private const val REINFER_INTERVAL_MS = 24L * 3600L * 1000L // re-infer at most once a day

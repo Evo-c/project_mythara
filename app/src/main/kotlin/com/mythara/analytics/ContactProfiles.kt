@@ -89,6 +89,19 @@ data class ContactProfileRow(
      * explicit reminders ("don't bring up her brother").
      */
     @ColumnInfo(name = "user_notes") val userNotes: String? = null,
+    /**
+     * Gemma-generated actionable communication summary derived from
+     * Big Five + notable traits. A short paragraph in the form
+     * "How to message <name>: keep replies …; lean into …; avoid …".
+     * Distinct from relationship_summary (which describes the
+     * relationship) and notable_traits (which lists adjectives) —
+     * this synthesises Big Five scores into concrete messaging
+     * guidance that the auto-reply prompt can use directly.
+     *
+     * Null when sample size is below threshold or Gemma isn't loaded.
+     * Repopulated on every successful Big Five inference pass.
+     */
+    @ColumnInfo(name = "personality_insights") val personalityInsights: String? = null,
     /** Last time the analytics builder produced / updated this row. */
     @ColumnInfo(name = "last_built_ms") val lastBuiltMs: Long = 0,
 ) {
@@ -131,7 +144,7 @@ interface ContactProfileDao {
     suspend fun clear()
 }
 
-@Database(entities = [ContactProfileRow::class], version = 3, exportSchema = false)
+@Database(entities = [ContactProfileRow::class], version = 4, exportSchema = false)
 abstract class ContactProfilesDb : RoomDatabase() {
     abstract fun profiles(): ContactProfileDao
 }

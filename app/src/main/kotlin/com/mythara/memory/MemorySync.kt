@@ -61,6 +61,9 @@ class MemorySync @Inject constructor(
     private val history: HistoryRepository,
     private val vault: LearningVault,
     private val deviceIdStore: DeviceIdStore,
+    private val contactProfiles: com.mythara.analytics.ContactProfileRepository,
+    private val favorites: com.mythara.data.FavoritesStore,
+    private val userAliases: com.mythara.data.UserAliasesStore,
 ) {
     data class Report(
         val ok: Boolean,
@@ -272,6 +275,63 @@ class MemorySync @Inject constructor(
             }
         }
 
+        // ---- analytics — DERIVED LEARNINGS, never raw payloads.
+        //      The learning vault above already carries the raw
+        //      per-contact message-history + observe-tier rows
+        //      (sha-deduped on insert). This section adds the
+        //      Gemma-distilled output: per-contact profiles +
+        //      curated favorites + user aliases. Cheap to write
+        //      (small JSON), expensive to rebuild on a new device
+        //      from scratch (~40s/contact Gemma run), so syncing
+        //      them is a big win for cross-device continuity.
+        //
+        //      What's in each file:
+        //        analytics/contact_profiles.jsonl  — one row per
+        //          contact: name + Big Five + summary + key points
+        //          + personality insights + user notes
+        //        analytics/favorites.json — the curated favorites
+        //          list with tones + app allowlists
+        //        analytics/user_aliases.json — "this is me" labels
+        //          (names + phones the user has marked as
+        //          themselves). Critical for cross-device imports —
+        //          without these synced, every new device repeats
+        //          the import-preview alias dance.
+        //
+        //      All three are LEARNINGS / CURATIONS only; no raw
+        //      images, audio, zips, or API keys touch the repo.
+        if (cfg.syncLearnings) {
+            val profiles = runCatching { contactProfiles.dao.listAll() }.getOrDefault(emptyList())
+            if (profiles.isNotEmpty()) {
+                val body = profiles.joinToString("\n") { row ->
+                    json.encodeToString(ContactProfileExport.serializer(), row.toExport(deviceId))
+                }
+                putWithCache(
+                    client, cfg, "analytics/contact_profiles.jsonl", body, manifest,
+                    "mythara: contact profiles (${profiles.size})", written, skipped,
+                )
+            }
+
+            val favs = runCatching { favorites.list() }.getOrDefault(emptyList())
+            val favBody = manifestJson.encodeToString(
+                kotlinx.serialization.builtins.ListSerializer(FavoriteExport.serializer()),
+                favs.map { FavoriteExport(name = it.name, phone = it.phone, apps = it.apps, enabled = it.enabled, tone = it.toneLabel) },
+            )
+            putWithCache(
+                client, cfg, "analytics/favorites.json", favBody, manifest,
+                "mythara: favorites (${favs.size})", written, skipped,
+            )
+
+            val aliases = runCatching { userAliases.list() }.getOrDefault(emptyList())
+            val aliasBody = manifestJson.encodeToString(
+                kotlinx.serialization.builtins.ListSerializer(UserAliasExport.serializer()),
+                aliases.map { UserAliasExport(name = it.name, phone = it.phone) },
+            )
+            putWithCache(
+                client, cfg, "analytics/user_aliases.json", aliasBody, manifest,
+                "mythara: user aliases (${aliases.size})", written, skipped,
+            )
+        }
+
         // ---- manifest.json (always last; lastSyncTs always changes)
         manifest.lastSyncTsMillis = now
         manifest.version = ManifestV2.CURRENT_VERSION
@@ -406,6 +466,77 @@ class MemorySync @Inject constructor(
             history.dao.clear()
             history.dao.insertAll(chatRowsBuffer)
             chatRows = chatRowsBuffer.size
+        }
+
+        // analytics/contact_profiles.jsonl — merge by name_key with
+        // last-built wins. User notes are pulled in too (other-
+        // device-set notes propagate); local notes that are newer
+        // survive because the local row's lastBuiltMs is older.
+        runCatching {
+            client.readFile(cfg.owner, cfg.repo, "analytics/contact_profiles.jsonl")
+        }.getOrNull()?.let { r ->
+            if (r is Outcome.Ok) {
+                val incoming = r.value.text.lineSequence()
+                    .filter { it.isNotBlank() }
+                    .mapNotNull {
+                        runCatching { json.decodeFromString(ContactProfileExport.serializer(), it) }.getOrNull()
+                    }
+                    .toList()
+                for (exp in incoming) {
+                    val existing = contactProfiles.dao.byKey(exp.nameKey)
+                    if (existing == null || existing.lastBuiltMs < exp.lastBuiltMs) {
+                        contactProfiles.dao.upsert(exp.toRow())
+                    }
+                }
+                filesRead.add("analytics/contact_profiles.jsonl")
+            }
+        }
+
+        // analytics/favorites.json — additive merge; remote entries
+        // not present locally are added, local-only stays.
+        runCatching {
+            client.readFile(cfg.owner, cfg.repo, "analytics/favorites.json")
+        }.getOrNull()?.let { r ->
+            if (r is Outcome.Ok) {
+                val incoming = runCatching {
+                    manifestJson.decodeFromString(
+                        kotlinx.serialization.builtins.ListSerializer(FavoriteExport.serializer()),
+                        r.value.text,
+                    )
+                }.getOrNull().orEmpty()
+                for (f in incoming) {
+                    favorites.upsert(
+                        com.mythara.data.FavoritesStore.Favorite(
+                            name = f.name,
+                            phone = f.phone,
+                            apps = f.apps.ifEmpty { listOf(com.mythara.data.FavoritesStore.WHATSAPP_PACKAGE) },
+                            enabled = f.enabled,
+                            toneLabel = f.tone,
+                        ),
+                    )
+                }
+                if (incoming.isNotEmpty()) filesRead.add("analytics/favorites.json")
+            }
+        }
+
+        // analytics/user_aliases.json — atomic merge via upsertAll.
+        runCatching {
+            client.readFile(cfg.owner, cfg.repo, "analytics/user_aliases.json")
+        }.getOrNull()?.let { r ->
+            if (r is Outcome.Ok) {
+                val incoming = runCatching {
+                    manifestJson.decodeFromString(
+                        kotlinx.serialization.builtins.ListSerializer(UserAliasExport.serializer()),
+                        r.value.text,
+                    )
+                }.getOrNull().orEmpty()
+                if (incoming.isNotEmpty()) {
+                    userAliases.upsertAll(
+                        incoming.map { com.mythara.data.UserAliasesStore.Alias(name = it.name, phone = it.phone) },
+                    )
+                    filesRead.add("analytics/user_aliases.json")
+                }
+            }
         }
 
         memorySettings.setManifestJson(manifestJson.encodeToString(ManifestV2.serializer(), manifest))
@@ -706,6 +837,52 @@ class MemorySync @Inject constructor(
     @Serializable
     data class SettingsExport(val region: String, val model: String)
 
+    /** Per-contact analytics row — one per line in
+     *  analytics/contact_profiles.jsonl. Stable short-key field names
+     *  keep the JSONL byte-efficient over time. */
+    @Serializable
+    data class ContactProfileExport(
+        val nameKey: String,
+        val displayName: String,
+        val phone: String? = null,
+        val isFavorite: Boolean = false,
+        val toneLabel: String? = null,
+        val firstSeenMs: Long,
+        val lastInteractionMs: Long,
+        val messageCount: Int = 0,
+        val imageCount: Int = 0,
+        val topTopicsJson: String = "[]",
+        val relationshipSummary: String? = null,
+        val openness: Double? = null,
+        val conscientiousness: Double? = null,
+        val extraversion: Double? = null,
+        val agreeableness: Double? = null,
+        val neuroticism: Double? = null,
+        val bigFiveSampleSize: Int = 0,
+        val bigFiveLastUpdatedMs: Long? = null,
+        val notableTraitsJson: String = "[]",
+        val keyPointsJson: String = "[]",
+        val userNotes: String? = null,
+        val personalityInsights: String? = null,
+        val lastBuiltMs: Long = 0,
+        val dev: String? = null,
+    )
+
+    @Serializable
+    data class FavoriteExport(
+        val name: String,
+        val phone: String = "",
+        val apps: List<String> = emptyList(),
+        val enabled: Boolean = true,
+        val tone: String = "realistic",
+    )
+
+    @Serializable
+    data class UserAliasExport(
+        val name: String,
+        val phone: String = "",
+    )
+
     @Serializable
     data class ChatRowExport(
         val t: Long,
@@ -826,3 +1003,60 @@ class MemorySync @Inject constructor(
         """.trimIndent()
     }
 }
+
+/** Reverse converter: wire-shape back to the Room row for restore. */
+private fun MemorySync.ContactProfileExport.toRow(): com.mythara.analytics.ContactProfileRow =
+    com.mythara.analytics.ContactProfileRow(
+        nameKey = nameKey,
+        displayName = displayName,
+        phone = phone,
+        isFavorite = isFavorite,
+        toneLabel = toneLabel,
+        firstSeenMs = firstSeenMs,
+        lastInteractionMs = lastInteractionMs,
+        messageCount = messageCount,
+        imageCount = imageCount,
+        topTopicsJson = topTopicsJson,
+        relationshipSummary = relationshipSummary,
+        openness = openness,
+        conscientiousness = conscientiousness,
+        extraversion = extraversion,
+        agreeableness = agreeableness,
+        neuroticism = neuroticism,
+        bigFiveSampleSize = bigFiveSampleSize,
+        bigFiveLastUpdatedMs = bigFiveLastUpdatedMs,
+        notableTraitsJson = notableTraitsJson,
+        keyPointsJson = keyPointsJson,
+        userNotes = userNotes,
+        personalityInsights = personalityInsights,
+        lastBuiltMs = lastBuiltMs,
+    )
+
+/** Compact converter from the analytics Room row to its sync-wire shape. */
+private fun com.mythara.analytics.ContactProfileRow.toExport(deviceId: String): MemorySync.ContactProfileExport =
+    MemorySync.ContactProfileExport(
+        nameKey = nameKey,
+        displayName = displayName,
+        phone = phone,
+        isFavorite = isFavorite,
+        toneLabel = toneLabel,
+        firstSeenMs = firstSeenMs,
+        lastInteractionMs = lastInteractionMs,
+        messageCount = messageCount,
+        imageCount = imageCount,
+        topTopicsJson = topTopicsJson,
+        relationshipSummary = relationshipSummary,
+        openness = openness,
+        conscientiousness = conscientiousness,
+        extraversion = extraversion,
+        agreeableness = agreeableness,
+        neuroticism = neuroticism,
+        bigFiveSampleSize = bigFiveSampleSize,
+        bigFiveLastUpdatedMs = bigFiveLastUpdatedMs,
+        notableTraitsJson = notableTraitsJson,
+        keyPointsJson = keyPointsJson,
+        userNotes = userNotes,
+        personalityInsights = personalityInsights,
+        lastBuiltMs = lastBuiltMs,
+        dev = deviceId,
+    )
