@@ -251,13 +251,19 @@ fun ChatScreen(
             .background(MytharaColors.Bg)
             .padding(insets),
     ) {
+        var appDrawerOpen by remember { mutableStateOf(false) }
         ChatHeader(
             onOpenSettings = onOpenSettings,
             onOpenPeople = onOpenPeople,
+            onOpenAppDrawer = { appDrawerOpen = true },
             thinking = ui.thinking,
             continuousMode = ui.continuousMode,
             onToggleContinuous = { vm.setContinuousMode(!ui.continuousMode) },
         )
+
+        if (appDrawerOpen) {
+            com.mythara.ui.launcher.AppDrawerSheet(onDismiss = { appDrawerOpen = false })
+        }
 
         Box(modifier = Modifier.weight(1f).fillMaxSize()) {
             if (ui.items.isEmpty() && ui.streaming.isNullOrEmpty()) {
@@ -319,6 +325,7 @@ fun ChatScreen(
 private fun ChatHeader(
     onOpenSettings: () -> Unit,
     onOpenPeople: () -> Unit,
+    onOpenAppDrawer: () -> Unit,
     thinking: Boolean,
     continuousMode: Boolean,
     onToggleContinuous: () -> Unit,
@@ -360,8 +367,8 @@ private fun ChatHeader(
             Spacer(Modifier.size(8.dp))
             // People / analytics pill — Charple-bordered to draw the
             // eye since this is the surface the user opens to prep
-            // for a conversation. Sits left of settings so it reads
-            // as the more frequently-used affordance.
+            // for a conversation. Sits left of the app-drawer pill
+            // and settings.
             Box(
                 modifier = Modifier
                     .clip(CircleShape)
@@ -373,6 +380,25 @@ private fun ChatHeader(
                 Text(
                     text = "${Glyph.DiamondFilled} people",
                     style = MaterialTheme.typography.labelMedium.copy(color = MytharaColors.Charple),
+                )
+            }
+            Spacer(Modifier.size(8.dp))
+            // App drawer pill — Mustard yellow. Tap opens the launcher-
+            // style grid of installed apps. Mythara is registered as a
+            // HOME-category Activity in the manifest, so the user can
+            // set it as their default launcher; this drawer fills the
+            // role a normal launcher's app drawer plays.
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(MytharaColors.Surface)
+                    .border(1.dp, MytharaColors.Mustard, CircleShape)
+                    .clickable(onClick = onOpenAppDrawer)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text = "${Glyph.DiamondFilled} apps",
+                    style = MaterialTheme.typography.labelMedium.copy(color = MytharaColors.Mustard),
                 )
             }
             Spacer(Modifier.size(8.dp))

@@ -84,6 +84,24 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Home / launcher intent. Required to appear in
+                 Settings → Apps → Default apps → Home app and be
+                 settable as the device's launcher. With this filter
+                 present, pressing the home gesture / button brings
+                 up Mythara's chat surface (so the assistant IS the
+                 home screen). The in-chat app-drawer pill (yellow)
+                 fills the role a traditional launcher plays — tap
+                 to see installed apps, tap to launch.
+
+                 LAUNCHER is also added below the HOME category so
+                 launcher pickers list Mythara explicitly; DEFAULT is
+                 needed for the implicit-intent resolution from the
+                 home button gesture. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
             <!-- Digital Assistant intents.
                  When the user sets Mythara as the default assistant app
                  (Settings → Apps → Default apps → Digital assistant app),
