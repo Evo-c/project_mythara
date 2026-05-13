@@ -89,6 +89,21 @@ class ToolRegistry @Inject constructor(
     )
     private val byName: Map<String, Tool> = tools.associateBy { it.name }
 
+    /**
+     * Composer-style names the model still tries from training bias
+     * even though they're no longer in [apiSchema]. We catch them
+     * at execute time and transparently redirect to the direct
+     * equivalent so the model's slip-up doesn't cost an extra
+     * round-trip (model emits send_whatsapp → registry returns
+     * unknown_tool → model retries with send_whatsapp_direct →
+     * actual send).
+     */
+    private val REDIRECTS = mapOf(
+        "send_whatsapp" to "send_whatsapp_direct",
+        "send_sms" to "send_sms_direct",
+        "place_call" to "place_call_direct",
+    )
+
     /** Names of all registered tools — for UI surfacing and diagnostics. */
     fun names(): List<String> = tools.map { it.name }
 
@@ -118,7 +133,17 @@ class ToolRegistry @Inject constructor(
      *      won't send the SMS then").
      */
     suspend fun execute(name: String, argsJson: String): ToolResult {
-        val tool = byName[name] ?: return ToolResult.fail("unknown tool: $name")
+        // Transparent redirect for composer-style names the model
+        // sometimes calls from training bias. Logs the redirect so
+        // we can see whether the apiSchema-only diet is enough or
+        // we're still seeing slip-throughs.
+        val effectiveName = REDIRECTS[name]?.also { target ->
+            android.util.Log.d(
+                "Mythara/Registry",
+                "redirect $name → $target (model called a deprecated composer name)",
+            )
+        } ?: name
+        val tool = byName[effectiveName] ?: return ToolResult.fail("unknown tool: $name")
         val args: JsonObject = runCatching {
             MiniMaxClient.json.decodeFromString<JsonObject>(argsJson.ifBlank { "{}" })
         }.getOrElse { JsonObject(emptyMap()) }
@@ -150,5 +175,5 @@ class ToolRegistry @Inject constructor(
     }
 
     /** True if the model returned a name we don't have a binding for. */
-    fun unknown(name: String): Boolean = name !in byName
+    fun unknown(name: String): Boolean = name !in byName && name !in REDIRECTS
 }
