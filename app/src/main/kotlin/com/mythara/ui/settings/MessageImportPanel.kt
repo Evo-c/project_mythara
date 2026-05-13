@@ -70,7 +70,7 @@ class MessageImportPanelViewModel @Inject constructor(
                 _busy.value = false
                 return@launch
             }
-            _status.value = "${Glyph.Ellipsis} analysing ${out.messages.size} messages…"
+            _status.value = "${Glyph.Ellipsis} analysing ${out.messages.size} messages (Gemma pass may take ~2 min)…"
             val report = runCatching { extractor.extractAndPersist("sms", out.messages) }
                 .getOrElse {
                     _status.value = "× analysis failed: ${it.message}"
@@ -96,7 +96,7 @@ class MessageImportPanelViewModel @Inject constructor(
                 _busy.value = false
                 return@launch
             }
-            _status.value = "${Glyph.Ellipsis} analysing ${out.messages.size} messages…"
+            _status.value = "${Glyph.Ellipsis} analysing ${out.messages.size} messages (Gemma pass may take ~2 min)…"
             val report = runCatching { extractor.extractAndPersist("whatsapp", out.messages) }
                 .getOrElse {
                     _status.value = "× analysis failed: ${it.message}"
@@ -198,7 +198,7 @@ fun MessageImportPanel(vm: MessageImportPanelViewModel = hiltViewModel()) {
 
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "${Glyph.AccentBar} Mythara reads your messaging history ONE TIME to learn patterns about you (top contacts, when you message most, your communication style) and writes those patterns to Lumi's memory. RAW MESSAGES ARE NEVER PERSISTED — only the extracted traits, which sync to your GitHub backup like every other vault record. For WhatsApp: open the chat in WhatsApp → kebab menu → More → Export chat → 'Without media' → share/save to a place you can find here (Files app, Downloads).",
+            text = "${Glyph.AccentBar} Mythara reads your messaging history ONE TIME to learn patterns about you (top contacts, when you message most, your communication style, and — if Gemma is loaded — deeper traits like recurring topics and tone). RAW MESSAGES NEVER LEAVE THE PHONE: cheap heuristics run locally, and the deep pass uses the on-device Gemma LLM. Only the extracted traits land in Lumi's memory and sync to your GitHub backup like every other vault record. For WhatsApp: open the chat in WhatsApp → kebab menu → More → Export chat → 'Without media' → share/save to a place you can find here (Files app, Downloads).",
             color = MytharaColors.FgDim,
             style = MaterialTheme.typography.bodySmall,
         )

@@ -4,6 +4,7 @@ import android.util.Log
 import com.mythara.memory.Tier
 import com.mythara.secret.observe.embed.EmbeddingsModelStore
 import com.mythara.secret.observe.embed.LocalEmbedder
+import com.mythara.secret.observe.extract.gemma.GemmaExtractor
 import com.mythara.secret.observe.vault.LearningVault
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -20,22 +21,28 @@ import java.util.Calendar
  * way" — land in the vault. Those records sync to GitHub like the
  * usage-stats persona records.
  *
- * v1 is heuristic only:
- *  - top-K contacts by message count
- *  - peak-hour bucket (when does the user text most)
- *  - communication style classification (casual / formal /
- *    abbreviation-heavy) via simple feature counts
- *  - count totals for transparency ("imported N messages")
+ * Two layers run in sequence:
+ *   1. Cheap heuristics over the entire batch — top contacts, peak-hour
+ *      band, style heuristics, totals. These always run and don't need
+ *      Gemma to be loaded.
+ *   2. If Gemma is available, a sampled chunk of the user's outgoing
+ *      messages (the user's own voice, never inbound from other people)
+ *      gets fed through the on-device LLM extractor to lift deeper
+ *      traits — recurring topics, relationship dynamics, voice/tone
+ *      patterns. This is the "way of communicating" pass the user
+ *      explicitly asked for.
  *
- * v2 (future) could run a Gemma summarisation pass over chunks to
- * extract higher-order traits ("relationship dynamics with X",
- * "common topics with Y") — same pattern as PersonaBuilder's
- * usage-stats path, just over message bodies.
+ * Privacy posture: we don't persist raw messages. Only the extracted
+ * traits — "top texting contact is Mom", "talks about gym a lot", "uses
+ * dry humour" — land in the vault. Those records sync to GitHub like
+ * the usage-stats persona records. Gemma runs ON-DEVICE; the messages
+ * never leave the phone, even to MiniMax.
  */
 @Singleton
 class MessagePersonaExtractor @Inject constructor(
     private val vault: LearningVault,
     private val embedder: LocalEmbedder,
+    private val gemma: GemmaExtractor,
 ) {
     data class Report(
         val ok: Boolean,
@@ -109,12 +116,132 @@ class MessagePersonaExtractor @Inject constructor(
             now = now,
         )?.let { written++ }
 
+        // 5) Gemma deep-extraction pass over sampled outgoing messages.
+        //    Only the USER's own messages — we never want to extract
+        //    facts about the user's contacts ("Mom likes coffee") or
+        //    misattribute someone else's preferences to the user.
+        //
+        //    Chunks are bounded by char count rather than message
+        //    count — short SMS chunks better, long WhatsApp paragraphs
+        //    chunk smaller. Each chunk gets one Gemma extract pass; we
+        //    de-dup at write-time so recurring statements across chunks
+        //    collapse into one vault record.
+        //
+        //    Skipped silently if Gemma isn't loaded (user hasn't
+        //    downloaded the model yet). The heuristic pass above is
+        //    always present, so the import is still useful in that
+        //    state — Gemma upgrades the result, doesn't gate it.
+        if (gemma.isReady() && userMessages.isNotEmpty()) {
+            val gemmaWritten = runGemmaPass(source, userMessages, now)
+            written += gemmaWritten
+            Log.d(TAG, "gemma pass wrote $gemmaWritten persona records over ${userMessages.size} outgoing $source messages")
+        } else if (!gemma.isReady()) {
+            Log.d(TAG, "skipping gemma pass — model not loaded")
+        }
+
         return Report(
             ok = true,
             recordsWritten = written,
             messagesAnalyzed = messages.size,
         )
     }
+
+    /**
+     * Build chunks of the user's outgoing messages and feed each to
+     * Gemma. Returns the number of vault records written.
+     *
+     * Why not feed everything at once: Gemma's context window is small
+     * (~2K char prompt cap in [GemmaExtractor.MAX_TRANSCRIPT_CHARS]),
+     * and the extraction quality degrades on giant chunks. Multiple
+     * smaller passes also give the model a chance to surface different
+     * traits per chunk; if we batched everything the latest content
+     * would dominate.
+     *
+     * Cap at [GEMMA_MAX_CHUNKS] chunks total so a 3000-message import
+     * doesn't camp on Gemma for 20 minutes. We sample evenly across
+     * the timeline so early + recent voice both get represented.
+     */
+    private suspend fun runGemmaPass(
+        source: String,
+        userMessages: List<MessageRecord>,
+        now: Long,
+    ): Int {
+        val chunks = chunkMessages(userMessages)
+        if (chunks.isEmpty()) return 0
+        val sampled = if (chunks.size <= GEMMA_MAX_CHUNKS) chunks else sampleEvenly(chunks, GEMMA_MAX_CHUNKS)
+        val collected = mutableListOf<String>()
+        for ((idx, chunk) in sampled.withIndex()) {
+            val transcript = buildTranscript(chunk)
+            val result = runCatching { gemma.extractWithMood(transcript) }.getOrNull()
+            if (result == null) {
+                Log.w(TAG, "gemma chunk $idx returned null result (model error?)")
+                continue
+            }
+            for (fact in result.facts) {
+                if (fact.content.isNotBlank()) collected.add(fact.content.trim())
+            }
+        }
+        if (collected.isEmpty()) return 0
+
+        // De-dup case-insensitively. Gemma frequently surfaces the same
+        // trait across chunks ("user works in tech", "the user is a
+        // software engineer") — embedding-based dedup would be ideal
+        // but case-insensitive contains() catches the bulk for free.
+        val unique = mutableListOf<String>()
+        for (line in collected) {
+            val lower = line.lowercase()
+            if (unique.none { it.lowercase().contains(lower) || lower.contains(it.lowercase()) }) {
+                unique.add(line)
+            }
+        }
+
+        var written = 0
+        for (line in unique.take(GEMMA_MAX_RECORDS)) {
+            addPersonaFact(
+                content = line,
+                traits = listOf("trait:gemma-extracted", "source:$source"),
+                now = now,
+            )?.let { written++ }
+        }
+        return written
+    }
+
+    /** Group adjacent messages into chunks bounded by [CHUNK_MAX_CHARS]. */
+    private fun chunkMessages(msgs: List<MessageRecord>): List<List<MessageRecord>> {
+        if (msgs.isEmpty()) return emptyList()
+        val out = mutableListOf<MutableList<MessageRecord>>()
+        var current = mutableListOf<MessageRecord>()
+        var currentLen = 0
+        for (m in msgs) {
+            val len = m.text.length + 2
+            if (currentLen + len > CHUNK_MAX_CHARS && current.isNotEmpty()) {
+                out.add(current)
+                current = mutableListOf()
+                currentLen = 0
+            }
+            current.add(m)
+            currentLen += len
+        }
+        if (current.isNotEmpty()) out.add(current)
+        return out
+    }
+
+    /** Pick [count] evenly-spaced chunks across the timeline. */
+    private fun <T> sampleEvenly(items: List<T>, count: Int): List<T> {
+        if (count >= items.size) return items
+        val step = items.size.toDouble() / count
+        val out = mutableListOf<T>()
+        var pos = 0.0
+        repeat(count) {
+            out.add(items[pos.toInt().coerceIn(0, items.size - 1)])
+            pos += step
+        }
+        return out
+    }
+
+    /** Render a chunk as the transcript text passed to Gemma. */
+    private fun buildTranscript(chunk: List<MessageRecord>): String =
+        chunk.joinToString("\n") { it.text }.take(CHUNK_MAX_CHARS)
 
     private suspend fun addPersonaFact(
         content: String,
@@ -210,6 +337,17 @@ class MessagePersonaExtractor @Inject constructor(
         private const val TOP_CONTACTS = 5
         private const val BAND_WIDTH = 4
         private const val STYLE_MIN_MESSAGES = 50
+
+        // Gemma pass tuning.
+        // CHUNK_MAX_CHARS sits below GemmaExtractor.MAX_TRANSCRIPT_CHARS
+        // (2_000) so the prompt template + transcript stay under the
+        // model's context window. GEMMA_MAX_CHUNKS bounds total inference
+        // cost; ~10s per chunk on CPU means a 12-chunk import is ~2 min.
+        // GEMMA_MAX_RECORDS caps the persona records we'll insert from a
+        // single import so a chatty model can't flood the vault.
+        private const val CHUNK_MAX_CHARS = 1_600
+        private const val GEMMA_MAX_CHUNKS = 12
+        private const val GEMMA_MAX_RECORDS = 30
         private val ABBREVIATIONS = setOf(
             "lol", "btw", "rn", "u", "ur", "tbh", "imo", "imho",
             "omw", "thx", "thnx", "k", "kk", "np", "ttyl", "brb",
