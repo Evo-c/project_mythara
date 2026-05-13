@@ -4,8 +4,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
@@ -21,9 +25,6 @@ import com.mythara.ui.secret.SecretUnlockDialog
 import com.mythara.ui.settings.SettingsScreen
 import com.mythara.ui.theme.MytharaColors
 import com.mythara.ui.theme.MytharaTheme
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 
 /**
  * Compose root. Owns the theme. Pivots between the AuthGate and the
@@ -68,9 +69,35 @@ fun MytharaRoot(
                 is AuthState.Unlocked -> {
                     var secretUnlockOpen by remember { mutableStateOf(false) }
 
+                    // "Hey Lumi <query>" → navigate to Chat. The actual
+                    // submission to MiniMax happens inside ChatViewModel
+                    // (which collects the same wake-queries flow); our
+                    // job here is just routing — pop the user from
+                    // Settings / About / SecretSettings back to Chat
+                    // so the agent's response is visible.
+                    //
+                    // Only collected while Unlocked — wakes that fire
+                    // while the app is Locked (just-backgrounded) are
+                    // deliberately not auto-actioned; the persistent
+                    // service notification is the surface to re-engage.
+                    val rootVm: RootViewModel = hiltViewModel()
+                    LaunchedEffect(Unit) {
+                        rootVm.wakeQueries.collect {
+                            val current = nav.currentDestination?.route
+                            if (current != Routes.Chat) {
+                                nav.navigate(Routes.Chat) {
+                                    popUpTo(Routes.Chat) { inclusive = false }
+                                    launchSingleTop = true
+                                }
+                            }
+                        }
+                    }
+
                     NavHost(navController = nav, startDestination = Routes.Chat) {
                         composable(Routes.Chat) {
-                            ChatScreen(onOpenSettings = { nav.navigate(Routes.Settings) })
+                            ChatScreen(
+                                onOpenSettings = { nav.navigate(Routes.Settings) },
+                            )
                         }
                         composable(Routes.Settings) {
                             SettingsScreen(

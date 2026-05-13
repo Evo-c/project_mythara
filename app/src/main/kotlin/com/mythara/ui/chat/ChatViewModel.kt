@@ -32,8 +32,17 @@ class ChatViewModel @Inject constructor(
     private val history: HistoryRepository,
     private val tts: Tts,
     private val languageDetector: LanguageDetector,
+    lumiListenerStore: com.mythara.wake.LumiListenerStore,
 ) : ViewModel() {
-    init { tts.init() }
+    init {
+        tts.init()
+        // "Hey Lumi <query>" → submit the query just like a typed message.
+        // The listener service has already transcribed it via Vosk;
+        // we don't need a second STT pass.
+        viewModelScope.launch {
+            lumiListenerStore.wakeQueries.collect { wq -> submit(wq.query) }
+        }
+    }
 
     /**
      * One renderable row in the timeline. The view composes a list of

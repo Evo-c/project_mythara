@@ -183,7 +183,7 @@ fun SettingsScreen(
         MemorySyncPanel()
 
         Spacer(Modifier.height(16.dp))
-        WakeWordPanel()
+        LumiListenerPanel()
 
         Spacer(Modifier.height(16.dp))
         Row(modifier = Modifier.fillMaxWidth()) {

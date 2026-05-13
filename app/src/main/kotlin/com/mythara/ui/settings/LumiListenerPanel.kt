@@ -29,11 +29,12 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mythara.secret.observe.vosk.VoskModelStore
 import com.mythara.ui.theme.Glyph
 import com.mythara.ui.theme.MytharaColors
-import com.mythara.wake.LumiWakeWordController
-import com.mythara.wake.LumiWakeWordService
-import com.mythara.wake.WakeWordSettings
+import com.mythara.wake.LumiListenerService
+import com.mythara.wake.LumiListenerSettings
+import com.mythara.wake.LumiListenerStore
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,27 +45,26 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
- * ViewModel for the wake-word panel. Owns:
- *  - the persisted "Listen for Lumi" toggle (DataStore)
- *  - the runtime controller [LumiWakeWordController.state]
- *  - asset-presence detection (paranoid — assets are committed in the repo)
- *  - permission state (the toggle is a no-op without RECORD_AUDIO)
- *
- * Starting/stopping the foreground service goes through
- * [LumiWakeWordService] start/stop intents.
+ * ViewModel for the always-listen panel. Owns:
+ *  - the persisted toggle (DataStore)
+ *  - the runtime service state flow
+ *  - asset check (Vosk model present?) — without the model the
+ *    listener can't transcribe anything
+ *  - mic-permission state
  */
 @HiltViewModel
-class WakeWordPanelViewModel @Inject constructor(
+class LumiListenerPanelViewModel @Inject constructor(
     @ApplicationContext private val ctx: Context,
-    private val settings: WakeWordSettings,
-    private val controller: LumiWakeWordController,
+    private val settings: LumiListenerSettings,
+    private val store: LumiListenerStore,
+    private val voskModelStore: VoskModelStore,
 ) : ViewModel() {
 
     data class State(
         val enabled: Boolean = false,
-        val controllerState: LumiWakeWordController.State = LumiWakeWordController.State.Idle,
+        val serviceState: LumiListenerStore.State = LumiListenerStore.State.Idle,
         val micGranted: Boolean = false,
-        val assetsPresent: Boolean = false,
+        val voskReady: Boolean = false,
     )
 
     private val _state = MutableStateFlow(State())
@@ -72,16 +72,15 @@ class WakeWordPanelViewModel @Inject constructor(
 
     init {
         refreshPermission()
-        _state.update { it.copy(assetsPresent = controller.assetsPresent()) }
+        refreshVoskReady()
         viewModelScope.launch {
-            settings.enabledFlow().collect { e ->
-                _state.update { it.copy(enabled = e) }
-            }
+            settings.enabledFlow().collect { e -> _state.update { it.copy(enabled = e) } }
         }
         viewModelScope.launch {
-            controller.state.collect { s ->
-                _state.update { it.copy(controllerState = s) }
-            }
+            store.state.collect { s -> _state.update { it.copy(serviceState = s) } }
+        }
+        viewModelScope.launch {
+            voskModelStore.state.collect { _ -> refreshVoskReady() }
         }
     }
 
@@ -92,12 +91,16 @@ class WakeWordPanelViewModel @Inject constructor(
         _state.update { it.copy(micGranted = granted) }
     }
 
+    private fun refreshVoskReady() {
+        _state.update { it.copy(voskReady = voskModelStore.isActiveReady()) }
+    }
+
     fun setEnabled(value: Boolean) {
         viewModelScope.launch {
             settings.setEnabled(value)
-            val intent = Intent(ctx, LumiWakeWordService::class.java)
+            val intent = Intent(ctx, LumiListenerService::class.java)
             if (value) {
-                if (!_state.value.assetsPresent) return@launch
+                if (!_state.value.voskReady) return@launch
                 if (!_state.value.micGranted) return@launch
                 ContextCompat.startForegroundService(ctx, intent)
             } else {
@@ -108,12 +111,14 @@ class WakeWordPanelViewModel @Inject constructor(
 }
 
 /**
- * Panel composable. Renders inside [SettingsScreen] between Memory Sync
- * and About. Single toggle + status pill — no per-user configuration
- * since the openWakeWord ONNX bundle ships pre-bundled.
+ * Settings panel for the always-listen path. Sits in main Settings —
+ * deliberately not behind the Secret-mode gate, because the privacy
+ * contract here is much tighter than Observe (no transcripts ever
+ * saved, no semantic extraction, no GitHub sync; queries leave only
+ * via the normal MiniMax chat flow).
  */
 @Composable
-fun WakeWordPanel(vm: WakeWordPanelViewModel = hiltViewModel()) {
+fun LumiListenerPanel(vm: LumiListenerPanelViewModel = hiltViewModel()) {
     val state by vm.state.collectAsState()
 
     val micPermLauncher = rememberLauncherForActivityResult(
@@ -129,39 +134,51 @@ fun WakeWordPanel(vm: WakeWordPanelViewModel = hiltViewModel()) {
             .padding(14.dp),
     ) {
         Text(
-            text = "${Glyph.DiamondOutline} wake word",
+            text = "${Glyph.DiamondOutline} 'Hey Lumi' always-listen",
             style = MaterialTheme.typography.labelLarge.copy(color = MytharaColors.FgMute),
         )
         Spacer(Modifier.height(8.dp))
 
-        // Status pill
+        // Status pill — prioritise the first thing that needs fixing.
         val (statusGlyph, statusColor, statusText) = when {
-            !state.assetsPresent -> Triple(Glyph.Cross, MytharaColors.Mustard,
-                "openWakeWord ONNX files missing in assets/")
-            !state.micGranted -> Triple(Glyph.CircleOutline, MytharaColors.FgMute,
-                "RECORD_AUDIO permission needed")
-            state.controllerState is LumiWakeWordController.State.Listening -> Triple(
-                Glyph.Dot, MytharaColors.Julep,
-                "listening for '${LumiWakeWordController.TRIGGER_PHRASE}'")
-            state.controllerState is LumiWakeWordController.State.Error -> Triple(
+            !state.voskReady -> Triple(
+                Glyph.Cross, MytharaColors.Mustard,
+                "Vosk model not downloaded — open Secret Settings to fetch it",
+            )
+            !state.micGranted -> Triple(
+                Glyph.CircleOutline, MytharaColors.FgMute,
+                "RECORD_AUDIO permission needed",
+            )
+            state.serviceState is LumiListenerStore.State.Listening -> Triple(
+                Glyph.Dot, MytharaColors.Julep, "listening for 'Hey Lumi …'",
+            )
+            state.serviceState is LumiListenerStore.State.Starting -> Triple(
+                Glyph.Ellipsis, MytharaColors.Citron, "starting…",
+            )
+            state.serviceState is LumiListenerStore.State.Stopping -> Triple(
+                Glyph.Ellipsis, MytharaColors.FgDim, "stopping…",
+            )
+            state.serviceState is LumiListenerStore.State.Error -> Triple(
                 Glyph.Cross, MytharaColors.Sriracha,
-                "error: ${(state.controllerState as LumiWakeWordController.State.Error).message}")
+                "error: ${(state.serviceState as LumiListenerStore.State.Error).message}",
+            )
             else -> Triple(Glyph.CircleOutline, MytharaColors.FgMute, "off")
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(statusGlyph, color = statusColor, style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.padding(end = 6.dp))
-            Text(statusText, color = MytharaColors.Fg,
-                style = MaterialTheme.typography.bodyMedium)
+            Text(
+                statusText, color = MytharaColors.Fg,
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
 
         Spacer(Modifier.height(10.dp))
 
-        // Toggle
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = state.assetsPresent) {
+                .clickable(enabled = state.voskReady) {
                     if (!state.micGranted) {
                         micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         return@clickable
@@ -178,7 +195,7 @@ fun WakeWordPanel(vm: WakeWordPanelViewModel = hiltViewModel()) {
             )
             Spacer(Modifier.padding(end = 8.dp))
             Text(
-                text = "always-on listener (foreground service)",
+                text = "always-on (foreground service)",
                 color = MytharaColors.Fg,
                 style = MaterialTheme.typography.bodyMedium,
             )
@@ -186,10 +203,7 @@ fun WakeWordPanel(vm: WakeWordPanelViewModel = hiltViewModel()) {
 
         Spacer(Modifier.height(6.dp))
         Text(
-            text = "${Glyph.AccentBar} trigger phrase: '${LumiWakeWordController.TRIGGER_PHRASE}' " +
-                "→ ${LumiWakeWordController.AGENT_NAME} takes over. Pre-trained openWakeWord model, no signup. " +
-                "Mutually exclusive with Observe mode (only one mic listener at a time). " +
-                "Wake events log to logcat as `Mythara/Wake`; chat-handoff polish ships next.",
+            text = "${Glyph.AccentBar} say \"Hey Lumi, <your question>\" — the listener transcribes locally with Vosk and submits only the matched query to MiniMax. Non-matching speech is dropped on the floor (never saved, never synced). Mutually exclusive with Observe mode at the mic hardware layer.",
             color = MytharaColors.FgDim,
             style = MaterialTheme.typography.bodySmall,
         )

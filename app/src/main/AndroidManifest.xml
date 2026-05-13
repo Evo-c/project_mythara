@@ -66,13 +66,14 @@
                 android:value="long-running on-device speech observation for personal AI assistant" />
         </service>
 
-        <!-- Lumi wake-word listener (M8.3a). Foreground service of type
-             `microphone` because openWakeWord captures continuous PCM
-             via AudioRecord. Mutually exclusive at the hardware layer
-             with ObserveForegroundService — only one AudioRecord client
-             at a time. -->
+        <!-- Lumi always-listen service (M8.3a v2). Foreground service
+             of type `microphone` — Vosk runs continuously, each final
+             transcript is regex-checked for "Hey Lumi <query>", and on
+             match the query is funnelled into ChatViewModel. Single
+             AudioRecord client; mutually exclusive with
+             ObserveForegroundService at the hardware layer. -->
         <service
-            android:name=".wake.LumiWakeWordService"
+            android:name=".wake.LumiListenerService"
             android:exported="false"
             android:foregroundServiceType="microphone"
             tools:targetApi="34" />

@@ -158,14 +158,6 @@ dependencies {
     // language facets to Observe vault records.
     implementation(libs.google.mlkit.language.id)
 
-    // openWakeWord (Re-MENTIA Kotlin wrapper) — on-device wake-word
-    // detection via ONNX Runtime. Drives M8.3a's "Hey Jarvis" trigger
-    // (user-facing identity stays Lumi). All three ONNX files
-    // (`melspectrogram.onnx`, `embedding_model.onnx`,
-    // `hey_jarvis_v0.1.onnx`) ship pre-bundled in
-    // `app/src/main/assets/` — Apache 2.0, no signup, no per-user
-    // configuration needed.
-    implementation(libs.rementia.openwakeword)
 
     // M5+ deps deferred until their milestones land:
     //   CameraX (take_photo), SQLCipher (Observe vault), Argon2 (Secret pw)

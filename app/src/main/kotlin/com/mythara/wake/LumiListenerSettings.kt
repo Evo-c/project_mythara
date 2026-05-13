@@ -13,20 +13,24 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Persistence for the "Listen for Lumi" toggle in main Settings.
+ * Persistence for the always-listen toggle in main Settings. Plain
+ * DataStore — the toggle isn't a secret, just user preference.
  *
- * Plain DataStore (not Tink-encrypted) because the toggle itself isn't
- * a secret — it's user preference. The wake-word model file is bundled
- * in the APK assets, not user-provided at runtime.
+ * Unlike Observe (Secret Settings), this surface is public: users see
+ * it in main Settings the same way they'd see "Wi-Fi" or "Bluetooth".
+ * The privacy contract is correspondingly tight: in this mode Vosk
+ * runs continuously but **no transcripts are persisted** unless they
+ * match "Hey Lumi <query>" and are subsequently submitted to the
+ * chat agent (where they go through the normal MiniMax round-trip).
  */
 @Singleton
-class WakeWordSettings @Inject constructor(
+class LumiListenerSettings @Inject constructor(
     @ApplicationContext private val ctx: Context,
 ) {
     private val Context.dataStore: DataStore<Preferences>
-        by preferencesDataStore(name = "mythara_wake_word")
+        by preferencesDataStore(name = "mythara_lumi_listener")
 
-    private val keyEnabled = booleanPreferencesKey("lumi.enabled")
+    private val keyEnabled = booleanPreferencesKey("listener.enabled")
 
     fun enabledFlow(): Flow<Boolean> = ctx.dataStore.data.map { it[keyEnabled] ?: false }
 
