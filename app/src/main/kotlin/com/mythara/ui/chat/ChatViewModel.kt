@@ -79,6 +79,15 @@ class ChatViewModel @Inject constructor(
         val errorBanner: String? = null,
         /** Names of the tools currently registered — surfaced for debug + Settings later. */
         val registeredTools: List<String> = emptyList(),
+        /**
+         * Continuous voice-chat mode. When on, ChatScreen runs an
+         * always-listening on-device SpeechRecognizer loop and submits
+         * each final utterance through [submit]. Off by default — opt
+         * in via the chat-header pill.
+         */
+        val continuousMode: Boolean = false,
+        /** True between the user's wake utterance and Lumi's TTS reply finishing. */
+        val speaking: Boolean = false,
     )
 
     private val _ui = MutableStateFlow(UiState())
@@ -158,6 +167,8 @@ class ChatViewModel @Inject constructor(
 
     fun dismissError() = _ui.update { it.copy(errorBanner = null) }
     fun dismissMissingKey() = _ui.update { it.copy(needsApiKey = false) }
+
+    fun setContinuousMode(value: Boolean) = _ui.update { it.copy(continuousMode = value) }
 
     private fun rebuildItems(rows: List<MessageRow>) {
         val items = mutableListOf<ChatItem>()

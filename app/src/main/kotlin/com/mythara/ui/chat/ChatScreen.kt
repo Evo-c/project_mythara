@@ -40,6 +40,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import com.mythara.mic.ContinuousSpeechRecognition
+import com.mythara.mic.SpeechRecognition
 import com.mythara.ui.theme.Glyph
 import com.mythara.ui.theme.JetBrainsMono
 import com.mythara.ui.theme.MytharaColors
@@ -61,13 +69,63 @@ fun ChatScreen(
     val ui by vm.ui.collectAsState()
     val insets = WindowInsets.systemBars.asPaddingValues()
 
+    // Continuous-mode driver: when the toggle is on, we keep an
+    // always-listening on-device SpeechRecognizer loop running and
+    // submit each final utterance into the agent. The loop is bound
+    // to this composition's lifecycle — leaving the chat screen tears
+    // it down. Permission is checked here so the LaunchedEffect can
+    // bail cleanly if RECORD_AUDIO isn't granted (mode flips back off).
+    val ctx = LocalContext.current
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (!granted) vm.setContinuousMode(false)
+    }
+    LaunchedEffect(ui.continuousMode) {
+        if (!ui.continuousMode) return@LaunchedEffect
+        val granted = ContextCompat.checkSelfPermission(
+            ctx, Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return@LaunchedEffect
+        }
+        // Pixel devices ship Soda on-device since API 31; quality is
+        // far above Vosk-small-en for proper nouns + conversational
+        // English. Free and unlimited.
+        ContinuousSpeechRecognition.listenContinuously(ctx).collect { ev ->
+            when (ev) {
+                is SpeechRecognition.Event.Final -> {
+                    val text = ev.text.trim()
+                    if (text.isNotBlank() && !ui.thinking) {
+                        vm.submit(text)
+                    }
+                }
+                is SpeechRecognition.Event.Error -> {
+                    // Silent for transient states (idle / no-speech /
+                    // recogniser-busy); surface the rest so the user
+                    // sees obvious breakage.
+                    if (!ContinuousSpeechRecognition.isTransient(ev.code)) {
+                        android.util.Log.w("Mythara/Chat", "continuous SR error: ${ev.message}")
+                    }
+                }
+                else -> { /* Partial / Ready / EndOfSpeech — ignore at chat level */ }
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(MytharaColors.Bg)
             .padding(insets),
     ) {
-        ChatHeader(onOpenSettings = onOpenSettings, thinking = ui.thinking)
+        ChatHeader(
+            onOpenSettings = onOpenSettings,
+            thinking = ui.thinking,
+            continuousMode = ui.continuousMode,
+            onToggleContinuous = { vm.setContinuousMode(!ui.continuousMode) },
+        )
 
         Box(modifier = Modifier.weight(1f).fillMaxSize()) {
             if (ui.items.isEmpty() && ui.streaming.isNullOrEmpty()) {
@@ -94,7 +152,12 @@ fun ChatScreen(
 }
 
 @Composable
-private fun ChatHeader(onOpenSettings: () -> Unit, thinking: Boolean) {
+private fun ChatHeader(
+    onOpenSettings: () -> Unit,
+    thinking: Boolean,
+    continuousMode: Boolean,
+    onToggleContinuous: () -> Unit,
+) {
     Row(
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -107,16 +170,26 @@ private fun ChatHeader(onOpenSettings: () -> Unit, thinking: Boolean) {
             ),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Row(
+            // Voice-chat toggle. ◇ when off, ● in Bok when on — same
+            // motif as the wake-word panel's "listening" indicator so
+            // the user reads "live mic" consistently across surfaces.
+            Box(
                 modifier = Modifier
                     .clip(CircleShape)
-                    .background(MytharaColors.Surface)
-                    .border(1.dp, MytharaColors.SurfaceHigh, CircleShape)
+                    .background(if (continuousMode) MytharaColors.Bok else MytharaColors.Surface)
+                    .border(
+                        1.dp,
+                        if (continuousMode) MytharaColors.Bok else MytharaColors.SurfaceHigh,
+                        CircleShape,
+                    )
+                    .clickable(onClick = onToggleContinuous)
                     .padding(horizontal = 10.dp, vertical = 4.dp),
             ) {
                 Text(
-                    text = "${Glyph.DiamondOutline} Assistive",
-                    style = MaterialTheme.typography.labelMedium.copy(color = MytharaColors.FgMute),
+                    text = if (continuousMode) "${Glyph.Dot} voice on" else "${Glyph.CircleOutline} voice off",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        color = if (continuousMode) MytharaColors.Bg else MytharaColors.FgMute,
+                    ),
                 )
             }
             Spacer(Modifier.size(8.dp))
