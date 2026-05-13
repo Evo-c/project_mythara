@@ -156,6 +156,7 @@ class MemorySync @Inject constructor(
         //      repo's semantic/ directory reads like a Karpathy-style wiki.
         val unsynced = vault.unsyncedRecords()
         if (unsynced.isNotEmpty()) {
+            // -- semantic/<topic>.jsonl
             val semanticOnly = unsynced.filter { it.tier == Tier.Semantic.code }
             val byTopic: Map<String, List<com.mythara.secret.observe.vault.LearningEntity>> =
                 semanticOnly.groupBy { entity ->
@@ -169,11 +170,29 @@ class MemorySync @Inject constructor(
                 val path = "${Tier.Semantic.dir}/$topic.jsonl"
                 putWithCache(client, cfg, path, body, manifest,
                     "mythara: semantic/$topic (+${records.size})", written, skipped)
-                // Mark these as synced so subsequent runs don't re-push them
-                // until/unless they're updated.
                 val syncTs = System.currentTimeMillis()
                 for (r in records) vault.markSynced(r.id, syncTs)
             }
+
+            // -- episodic/<YYYY-W##>.jsonl  (Gemma-summarised clusters
+            //    from the SelfOrganizerWorker). Partitioned by ISO week
+            //    so the repo's episodic/ directory reads as a temporal
+            //    journal — drag-scroll through weeks to see what
+            //    Mythara crystallised from each session.
+            val episodicOnly = unsynced.filter { it.tier == Tier.Episodic.code }
+            val byWeek: Map<String, List<com.mythara.secret.observe.vault.LearningEntity>> =
+                episodicOnly.groupBy { isoWeek(it.tsMillis) }
+            for ((week, records) in byWeek) {
+                val body = records.joinToString("\n") { entity ->
+                    json.encodeToString(MemoryRecord.serializer(), vault.toMemoryRecord(entity, dev = deviceId))
+                }
+                val path = "${Tier.Episodic.dir}/$week.jsonl"
+                putWithCache(client, cfg, path, body, manifest,
+                    "mythara: episodic/$week (+${records.size})", written, skipped)
+                val syncTs = System.currentTimeMillis()
+                for (r in records) vault.markSynced(r.id, syncTs)
+            }
+
             // working-tier records (raw transcripts) are deliberately NOT
             // synced; leave them as unsynced=true forever in the local vault.
         }
@@ -509,6 +528,22 @@ class MemorySync @Inject constructor(
         return DateTimeFormatter.ISO_LOCAL_DATE.format(dt)
     }
 
+    /**
+     * `YYYY-Www` ISO week-of-year identifier. Used as the partition
+     * key for `episodic/<week>.jsonl` files. Uses the device-local
+     * time zone to match the user's intuition of "this week" — the
+     * trade-off is that devices in different zones may bin the same
+     * timestamp differently, which is fine since auto-merge dedupes
+     * by record ID at sync time anyway.
+     */
+    private fun isoWeek(ms: Long): String {
+        val zdt = java.time.Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault())
+        val weekFields = java.time.temporal.WeekFields.ISO
+        val yr = zdt.get(weekFields.weekBasedYear())
+        val wk = zdt.get(weekFields.weekOfWeekBasedYear())
+        return "%04d-W%02d".format(yr, wk)
+    }
+
     private fun isoUtc(ms: Long): String {
         if (ms <= 0L) return "never"
         val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
@@ -549,9 +584,10 @@ class MemorySync @Inject constructor(
         private const val README_PATH = "README.md"
         private const val MEMORY_PATH = "MEMORY.md"
         private const val MEMORY_BRIDGE_CAP = 50
-        // semantic/ is populated by the vault sync above when there are
-        // records; still seeded as a placeholder for fresh repos.
-        private val TIER_PLACEHOLDERS = listOf(Tier.Episodic, Tier.Semantic, Tier.Procedural)
+        // semantic/ and episodic/ are populated by the vault sync above
+        // when there are records; only procedural/ remains a pure
+        // placeholder until M8.4+ ships an action-pattern extractor.
+        private val TIER_PLACEHOLDERS = listOf(Tier.Procedural)
 
         private val PLACEHOLDER_BODY = """
             # placeholder

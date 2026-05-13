@@ -68,8 +68,14 @@ class SemanticRecall @Inject constructor(
             Log.w(TAG, "embed failed: ${it.message}")
             return emptyList()
         }
-        val records: List<LearningEntity> = vault.listByTier(Tier.Semantic, limit = SCAN_LIMIT)
-            .filter { it.embedding != null }
+        // Pull from both semantic (durable facts) AND episodic
+        // (Gemma-summarised conversation windows). Episodic carries
+        // longer time-context — "what we discussed last Tuesday" —
+        // which complements the fact-shaped semantic tier nicely.
+        val records: List<LearningEntity> = buildList {
+            addAll(vault.listByTier(Tier.Semantic, limit = SCAN_LIMIT))
+            addAll(vault.listByTier(Tier.Episodic, limit = SCAN_LIMIT))
+        }.filter { it.embedding != null }
         if (records.isEmpty()) return emptyList()
 
         val now = System.currentTimeMillis()
