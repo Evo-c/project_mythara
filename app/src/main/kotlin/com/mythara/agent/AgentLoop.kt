@@ -100,18 +100,30 @@ class AgentLoop @Inject constructor(
             ChatMessage(role = "system", content = rendered)
         }
 
-        // Recent emotional trend across the last 6 hours of semantic
-        // records. Drives a separate system message so MiniMax can
-        // shape its tone (warm + supportive when the user's anxious,
-        // upbeat when excited, default otherwise). Only fires when
-        // Gemma extraction is enabled and ≥50% of recent records
-        // agree on a single mood — too mixed and we say nothing,
-        // which avoids whiplash advice.
+        // Two mood signals:
+        //   1. currentMood — the freshest detected emotion from the
+        //      just-spoken / just-typed user input. Lives in a vault
+        //      record written by ChatMoodTracker microseconds before
+        //      we get here. This is the DOMINANT signal for the
+        //      current turn — Lumi adapts THIS reply to it.
+        //   2. moodTrend — 6-hour windowed dominant mood. Background
+        //      relational context ("user has been stressed lately").
+        // The system message renders both when present, with the
+        // current one prioritised; the model is given directive
+        // per-mood guidance (concrete do/don't) rather than a soft
+        // hint, so behaviour actually changes.
+        val currentMood = recall.currentMood()
         val moodTrend = recall.recentMoodTrend()
-        val moodSystem: ChatMessage? = recall.renderMoodSystemMessage(moodTrend)?.let { rendered ->
-            android.util.Log.d(TAG, "injecting mood context: $moodTrend")
+        val moodSystem: ChatMessage? = recall.renderMoodSystemMessage(
+            currentMood = currentMood,
+            moodTrend = moodTrend,
+        )?.let { rendered ->
+            android.util.Log.d(TAG, "injecting mood: current=$currentMood trend=$moodTrend")
             ChatMessage(role = "system", content = rendered)
         }
+        // Final mood for downstream prosody (TTS pitch/rate, EL voice
+        // settings). currentMood wins when present.
+        val effectiveMood = currentMood ?: moodTrend
 
         // Voice-input system prompt. When the user spoke (Pixel Buds
         // tap, mic button, continuous voice chat), force a much shorter
@@ -261,7 +273,7 @@ class AgentLoop @Inject constructor(
             // that the next iteration should execute tools + resume.
             val toolFinish = finishReason == "tool_calls" || finishReason == "tool_use"
             if (toolCalls.isEmpty() || !toolFinish) {
-                emit(Turn.Finished(lastAssistantText, iterations = iter, userMoodTrend = moodTrend))
+                emit(Turn.Finished(lastAssistantText, iterations = iter, userMoodTrend = effectiveMood))
                 return@flow
             }
 
@@ -295,7 +307,7 @@ class AgentLoop @Inject constructor(
 
         // Hit the iteration cap. Surface a soft-stop so the user sees a
         // bounded conversation instead of an infinite-loop bill.
-        emit(Turn.Finished(lastAssistantText + " [hit max iterations]", iterations = iter, userMoodTrend = moodTrend))
+        emit(Turn.Finished(lastAssistantText + " [hit max iterations]", iterations = iter, userMoodTrend = effectiveMood))
     }
 
     /**
