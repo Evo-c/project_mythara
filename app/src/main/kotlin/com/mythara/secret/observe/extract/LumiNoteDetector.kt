@@ -52,13 +52,36 @@ object LumiNoteDetector {
 
     /**
      * Pattern, in order:
-     *   - optional address opener (hey/hi/hello/okay/yo)
-     *   - the Lumi token (or one of its likely-mishears)
-     *   - optional connector word (please / can you / remember / note)
-     *   - optional `,` `:` `-` or whitespace
+     *   - one of two alternations covering Vosk-en-us mishears of
+     *     the proper noun "Lumi" (which is out-of-vocab and gets
+     *     hallucinated as nearby phonemes):
+     *
+     *     a) "<opener> me" — Vosk drops the L and renders the
+     *        remaining "-uh-mee" as just "me", typically with a short
+     *        opener like `a`, `hey`, `hello`, `hi`, `the` from the
+     *        original "Hey Lumi". Real samples captured in field test:
+     *          "a me" (was "Hey Lumi")
+     *          "hello me what time is it" (was "Hey Lumi what time is it")
+     *
+     *     b) An L-vowel-token whose phonemes are close to "loomy":
+     *        `lumi / loomi / loomy / lumey / leumi / lumy / lumie /
+     *        loomie / lou me / lou mi`, with an optional standard
+     *        opener. Real samples:
+     *          "leumi hello" (was "Lumi hello")
+     *
+     *   - optional connector words (please / can you / remember /
+     *     note / jot down) consumed by the prefix so the returned
+     *     tail is the actual user query.
+     *   - optional `,` `:` `-` or whitespace before the query.
+     *
+     * Trade-off: pattern (a) makes the regex broader and admits some
+     * legitimate "hey me ..." utterances as Lumi commands. Acceptable
+     * because that phrasing is unusual in natural speech, and users
+     * who say "hey me" deliberately probably want to address the
+     * assistant anyway.
      */
     private val PREFIX_RE = Regex(
-        pattern = """^\s*(?:hey\s+|hi\s+|hello\s+|okay\s+|ok\s+|yo\s+)?(?:lumi|loomi|lumy|loomie|lumie)\b[\s,:\-]*(?:please\s+|can\s+you\s+|could\s+you\s+|remember\s+|note\s+|jot\s+down\s+)?""",
+        pattern = """^\s*(?:(?:hey|hi|hello|okay|ok|yo|a|the)\s+me|(?:hey\s+|hi\s+|hello\s+|okay\s+|ok\s+|yo\s+)?(?:lumi|loomi|loomy|lumey|leumi|lumy|lumie|loomie|lou\s+me|lou\s+mi))\b[\s,:\-]*(?:please\s+|can\s+you\s+|could\s+you\s+|remember\s+|note\s+|jot\s+down\s+)?""",
         options = setOf(RegexOption.IGNORE_CASE),
     )
 }

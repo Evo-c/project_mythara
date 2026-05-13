@@ -143,11 +143,17 @@ class LumiListenerService : Service() {
     }
 
     private fun handleTranscript(text: String) {
-        // Regex check at start-of-utterance. Same detector that Observe
-        // uses for explicit notes — extracts the tail after "Hey Lumi"
-        // and its common Vosk mishears.
+        // Privacy: non-matching transcripts must never escape volatile
+        // memory — the panel's contract is "Vosk runs locally, nothing
+        // is persisted unless it's a 'Hey Lumi <query>' that the user
+        // explicitly addressed to the assistant". logcat is a circular
+        // buffer that *does* persist long enough for screen-recording
+        // / bug-report grabs to capture it, so don't log raw text.
         val query = LumiNoteDetector.detect(text) ?: return
         if (query.isBlank()) return
+        // The match itself + the query text are loggable — the user
+        // just chose to send these words to MiniMax, so by the time
+        // this Log.d runs the data is about to leave the device anyway.
         Log.d(TAG, "wake → query: ${query.take(80)}")
         store.emitWake(query)
     }
