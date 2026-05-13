@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.mythara.agent.AutoReplyDispatcher
+import com.mythara.agent.NotificationImageIngestor
 import com.mythara.agent.SelfOrganizerScheduler
 import com.mythara.growth.GrowthScheduler
 import com.mythara.memory.MemorySyncScheduler
@@ -40,6 +41,7 @@ class MytharaApp : Application(), Configuration.Provider {
     @Inject lateinit var personaScheduler: PersonaScheduler
     @Inject lateinit var personaSettings: PersonaSettings
     @Inject lateinit var autoReplyDispatcher: AutoReplyDispatcher
+    @Inject lateinit var notificationImageIngestor: NotificationImageIngestor
 
     // App-scoped supervisor for fire-and-forget process-level
     // coroutines (settings-flow observers etc.). Cancelled implicitly
@@ -62,6 +64,11 @@ class MytharaApp : Application(), Configuration.Provider {
         // EnterpriseAutopilotStore + FavoritesStore — flipping any of
         // those off pauses auto-replies without stopping the listener.
         autoReplyDispatcher.start()
+        // Notification-image ingestor — the dispatcher enqueues
+        // attached images here; the ingestor processes them one at
+        // a time with a 30s gap, drops forwards/memes/ads, persists
+        // genuine personal-moment learnings into the vault.
+        notificationImageIngestor.start()
         // Reflect the user's persistent-talk-notification preference
         // on every cold start (and follow live toggles while the
         // process is alive). Observing the Flow rather than reading

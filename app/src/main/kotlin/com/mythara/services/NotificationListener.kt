@@ -1,9 +1,13 @@
 package com.mythara.services
 
 import android.app.Notification
+import android.graphics.Bitmap
+import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import java.io.File
+import java.io.FileOutputStream
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -58,6 +62,21 @@ class NotificationListener : NotificationListenerService() {
         val text: String?,
         val subText: String?,
         val ongoing: Boolean,
+        /**
+         * Absolute paths to images extracted from this notification's
+         * Notification.EXTRA_PICTURE / large icon big extras. Saved to
+         * app-private storage on capture and consumed by
+         * [com.mythara.agent.NotificationImageIngestor] which deletes
+         * them after processing. Empty when no image was attached.
+         */
+        val imagePaths: List<String> = emptyList(),
+        /**
+         * Heuristic: the body looks like a video placeholder
+         * ("🎥 Video" or similar short marker). When true, the
+         * dispatcher / ingestor skips this notification entirely —
+         * we don't process video notifications.
+         */
+        val looksLikeVideo: Boolean = false,
     )
 
     override fun onListenerConnected() {
@@ -133,6 +152,17 @@ class NotificationListener : NotificationListenerService() {
         val text = bigText ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
         val subText = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
         val isOngoing = (sbn.notification?.flags ?: 0) and Notification.FLAG_ONGOING_EVENT != 0
+
+        // Image + video extraction. Notifications can carry an inline
+        // bitmap via EXTRA_PICTURE (big-picture style) or
+        // EXTRA_LARGE_ICON_BIG (some apps use this for thumbnail). We
+        // save whatever's there to disk so the ingestor can decide
+        // whether to process it — the bitmap itself shouldn't ride in
+        // the Recent struct (Bitmaps are heavy, the Recent goes through
+        // a SharedFlow + buffer).
+        val savedImages = extractAndSaveImages(extras, sbn.key.orEmpty())
+        val looksLikeVideo = looksLikeVideoNotification(text)
+
         val r = Recent(
             key = sbn.key.orEmpty(),
             packageName = sbn.packageName.orEmpty(),
@@ -141,6 +171,8 @@ class NotificationListener : NotificationListenerService() {
             text = text?.take(MAX_TEXT_LEN),
             subText = subText?.take(MAX_TEXT_LEN),
             ongoing = isOngoing,
+            imagePaths = savedImages,
+            looksLikeVideo = looksLikeVideo,
         )
         // Detect whether this is a *new* notification vs an update to an
         // existing one (sticky media controls re-post on every track
@@ -166,10 +198,121 @@ class NotificationListener : NotificationListenerService() {
      *  notifications can be filtered out by the caller. */
     fun snapshot(): List<Recent> = recent.toList()
 
+    /**
+     * Pull any inline image bitmap out of a notification's extras and
+     * persist it under app-private filesDir so downstream ingestors
+     * can pass paths around without keeping heavy Bitmap references on
+     * the SharedFlow.
+     *
+     * Sources we cover:
+     *   - Notification.EXTRA_PICTURE   (big-picture style, the canonical
+     *                                   path WhatsApp uses for image
+     *                                   message thumbnails)
+     *   - Notification.EXTRA_LARGE_ICON_BIG (some apps surface the
+     *                                   image as the larger icon)
+     *
+     * We do NOT extract MessagingStyle dataUri images for v1 —
+     * resolving those URIs requires URI permissions that aren't
+     * guaranteed for notification listeners, and the bitmap path
+     * covers WhatsApp + most SMS clients which is the bulk of the
+     * use case.
+     *
+     * Returns absolute paths to JPEGs (75% quality, capped at
+     * MAX_NOTIF_IMAGE_SIDE on the long edge — the vision model
+     * doesn't need full-res, and shrinking saves disk + transport).
+     */
+    @Suppress("DEPRECATION")
+    private fun extractAndSaveImages(extras: android.os.Bundle, key: String): List<String> {
+        val out = mutableListOf<String>()
+        val candidates = mutableListOf<Bitmap>()
+
+        // EXTRA_PICTURE — big-picture style.
+        val pic: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            extras.getParcelable(Notification.EXTRA_PICTURE, Bitmap::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            extras.getParcelable<Bitmap>(Notification.EXTRA_PICTURE)
+        }
+        pic?.let(candidates::add)
+
+        // EXTRA_LARGE_ICON_BIG — alternate carrier.
+        val icon: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            extras.getParcelable(Notification.EXTRA_LARGE_ICON_BIG, Bitmap::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            extras.getParcelable<Bitmap>(Notification.EXTRA_LARGE_ICON_BIG)
+        }
+        icon?.let { i ->
+            // Skip tiny icons — those are app glyphs, not actual photos.
+            if (i.width >= MIN_NOTIF_IMAGE_SIDE && i.height >= MIN_NOTIF_IMAGE_SIDE) {
+                candidates.add(i)
+            }
+        }
+
+        if (candidates.isEmpty()) return emptyList()
+
+        // Save to app-private staging dir. Unique filename keyed by
+        // (notif key, nanoTime) so multiple notifications + multiple
+        // images don't collide.
+        val dir = imageStagingDir()
+        dir.mkdirs()
+        for ((idx, bmp) in candidates.withIndex()) {
+            val resized = downscaleIfNeeded(bmp)
+            val safeKey = key.replace(Regex("[^A-Za-z0-9]"), "_").take(40)
+            val file = File(dir, "notif_${safeKey}_${System.nanoTime()}_$idx.jpg")
+            val ok = runCatching {
+                FileOutputStream(file).use { fos ->
+                    resized.compress(Bitmap.CompressFormat.JPEG, 75, fos)
+                }
+                true
+            }.getOrElse {
+                Log.w(TAG, "couldn't persist notification image: ${it.message}")
+                false
+            }
+            if (ok) out.add(file.absolutePath)
+        }
+        return out
+    }
+
+    private fun downscaleIfNeeded(src: Bitmap): Bitmap {
+        val longEdge = maxOf(src.width, src.height)
+        if (longEdge <= MAX_NOTIF_IMAGE_SIDE) return src
+        val scale = MAX_NOTIF_IMAGE_SIDE.toFloat() / longEdge
+        val newW = (src.width * scale).toInt().coerceAtLeast(1)
+        val newH = (src.height * scale).toInt().coerceAtLeast(1)
+        return runCatching { Bitmap.createScaledBitmap(src, newW, newH, true) }.getOrDefault(src)
+    }
+
+    /**
+     * Cheap text heuristic for "this is a video, not an image"
+     * placeholders. WhatsApp surfaces video messages as "🎥 Video"
+     * or "📹 Video" in EXTRA_TEXT before the user opens the chat.
+     * Conservative: if the body is short AND contains a video glyph
+     * or the literal word "video", treat as video.
+     */
+    private fun looksLikeVideoNotification(body: String?): Boolean {
+        val b = body?.trim().orEmpty()
+        if (b.isEmpty()) return false
+        if (b.length > 30) return false
+        if (b.contains('\uD83C') /* 🎥 / 📹 / 🎬 high-surrogate */) {
+            if (b.contains("🎥") || b.contains("📹") || b.contains("🎬")) return true
+        }
+        return b.equals("video", ignoreCase = true) || b.startsWith("video", ignoreCase = true) &&
+            b.length < 15
+    }
+
+    private fun imageStagingDir(): File = File(filesDir, "notif_images")
+
     companion object {
         private const val TAG = "Mythara/Notif"
         private const val BUFFER_SIZE = 50
         private const val MAX_TEXT_LEN = 600
+
+        /** Below this, the "image" is almost certainly an app glyph. */
+        private const val MIN_NOTIF_IMAGE_SIDE = 96
+
+        /** Long-edge cap. Vision models work fine at this resolution. */
+        private const val MAX_NOTIF_IMAGE_SIDE = 1024
 
         @Volatile var instance: NotificationListener? = null
             private set

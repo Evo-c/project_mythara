@@ -55,6 +55,7 @@ class AutoReplyDispatcher @Inject constructor(
     private val triage: AutoTriageStore,
     private val runner: AgentRunner,
     private val audit: AuditLogger,
+    private val imageIngestor: NotificationImageIngestor,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -77,10 +78,25 @@ class AutoReplyDispatcher @Inject constructor(
         if (r.packageName == ctx.packageName) return
         val title = r.title?.trim().orEmpty()
         val body = r.text?.trim().orEmpty()
-        if (title.isEmpty() || body.isEmpty()) return
+        // Allow title-only (image-only message with no caption) when
+        // there's image content attached; otherwise an empty body is
+        // a useless ping.
+        if (title.isEmpty()) return
+        if (body.isEmpty() && r.imagePaths.isEmpty()) return
 
         // Master gate: autopilot off → no auto-paths fire at all.
-        if (!autopilot.isEnabled()) return
+        if (!autopilot.isEnabled()) {
+            // Also clean up any staged images we won't be using.
+            r.imagePaths.forEach { runCatching { java.io.File(it).delete() } }
+            return
+        }
+        // Video notifications: never process. Delete any leaked
+        // images on this notif as a defensive cleanup.
+        if (r.looksLikeVideo) {
+            Log.d(TAG, "skipping video notification from ${r.packageName}")
+            r.imagePaths.forEach { runCatching { java.io.File(it).delete() } }
+            return
+        }
         // Enterprise gate: enterprise app + enterprise autopilot off → skip.
         if (EnterpriseAutopilotStore.isEnterprise(r.packageName) && !entAutopilot.isEnabled()) {
             Log.d(TAG, "enterprise autopilot off — skipping ${r.packageName}")
@@ -96,12 +112,29 @@ class AutoReplyDispatcher @Inject constructor(
         // Route 1: favorite match — explicit per-contact tone.
         val fav = favorites.matchByName(title)
         if (fav != null) {
-            if (!fav.enabled) return
-            if (fav.apps.isNotEmpty() && r.packageName !in fav.apps) {
-                Log.d(TAG, "favorite ${fav.name} matched but pkg=${r.packageName} not in app allowlist")
+            if (!fav.enabled) {
+                r.imagePaths.forEach { runCatching { java.io.File(it).delete() } }
                 return
             }
-            fireFavoriteReply(fav, body, r.packageName)
+            if (fav.apps.isNotEmpty() && r.packageName !in fav.apps) {
+                Log.d(TAG, "favorite ${fav.name} matched but pkg=${r.packageName} not in app allowlist")
+                r.imagePaths.forEach { runCatching { java.io.File(it).delete() } }
+                return
+            }
+            // Ingest any attached images — favorites get the
+            // strongest signal (we trust this contact) so images
+            // pipe straight into the throttled processor.
+            if (r.imagePaths.isNotEmpty()) {
+                Log.d(TAG, "enqueueing ${r.imagePaths.size} image(s) from favorite ${fav.name}")
+                imageIngestor.enqueue(r.imagePaths, fav.name, r.packageName)
+            }
+            // Text body reply path. If the message was image-only
+            // (empty body), don't fire a text reply turn — the image
+            // ingest is happening in the background and there's
+            // nothing to respond to.
+            if (body.isNotEmpty()) {
+                fireFavoriteReply(fav, body, r.packageName)
+            }
             return
         }
 
@@ -109,24 +142,39 @@ class AutoReplyDispatcher @Inject constructor(
         // in. The triage prompt does the heavy lifting (decides yes/
         // no, mirrors tone, refuses URLs, drops groups) but we still
         // pre-filter obvious cases here to save tokens.
-        if (!triage.isEnabled()) return
+        if (!triage.isEnabled()) {
+            r.imagePaths.forEach { runCatching { java.io.File(it).delete() } }
+            return
+        }
 
         if (looksLikeGroup(title, body)) {
             Log.d(TAG, "triage skip (group): title=$title body0='${body.take(40)}'")
+            r.imagePaths.forEach { runCatching { java.io.File(it).delete() } }
             return
         }
         if (looksLikeAutomatedSender(title)) {
             Log.d(TAG, "triage skip (automated sender): title=$title")
+            r.imagePaths.forEach { runCatching { java.io.File(it).delete() } }
             return
         }
         if (!isMessagingApp(r.packageName)) {
             // Only triage actual messaging-app notifications. App
             // notifications from random apps (Tinder match, news
             // alert, etc.) get the normal surface path.
+            r.imagePaths.forEach { runCatching { java.io.File(it).delete() } }
             return
         }
 
-        fireTriage(title, body, r.packageName)
+        // Images: same vision+gemma pipeline as favorites. The vision
+        // prompt + Gemma's "empty facts" return path naturally drops
+        // memes / forwards / ads.
+        if (r.imagePaths.isNotEmpty()) {
+            Log.d(TAG, "enqueueing ${r.imagePaths.size} image(s) from non-favorite $title")
+            imageIngestor.enqueue(r.imagePaths, title, r.packageName)
+        }
+        if (body.isNotEmpty()) {
+            fireTriage(title, body, r.packageName)
+        }
     }
 
     private suspend fun fireFavoriteReply(fav: FavoritesStore.Favorite, body: String, pkg: String) {
