@@ -34,6 +34,22 @@ interface GitHubApi {
         @Path("path", encoded = true) path: String,
     ): Response<ContentItem>
 
+    /**
+     * Directory listing. Same endpoint as [getContents] but expects an
+     * array response — GitHub returns `ContentItem` when the path is a
+     * file and `List<ContentItem>` when it's a directory. Each entry's
+     * `type` is "file" or "dir".
+     *
+     * Used by the `list_mythara_devices` agent tool to enumerate every
+     * device that's ever written to `device_messages/inbox/`.
+     */
+    @GET("repos/{owner}/{repo}/contents/{path}")
+    suspend fun listContents(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("path", encoded = true) path: String,
+    ): Response<List<ContentItem>>
+
     @PUT("repos/{owner}/{repo}/contents/{path}")
     suspend fun putContents(
         @Path("owner") owner: String,

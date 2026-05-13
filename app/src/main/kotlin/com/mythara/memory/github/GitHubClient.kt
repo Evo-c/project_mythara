@@ -120,6 +120,32 @@ class GitHubClient(private val pat: String) {
     }
 
     /**
+     * List the entries in a directory. GitHub's same `/contents/{path}`
+     * endpoint returns an array when the path is a dir; we model that
+     * as a separate Retrofit call ([GitHubApi.listContents]).
+     *
+     * Returns each entry's name + type ("file" / "dir") + size. Used by
+     * the `list_mythara_devices` agent tool to enumerate inbox files
+     * (`device_messages/inbox/<device_id>.jsonl`) and infer the set of
+     * Mythara installs syncing to this repo.
+     */
+    suspend fun listDirectory(
+        owner: String,
+        repo: String,
+        path: String,
+    ): Outcome<List<DirEntry>> {
+        val r = api.listContents(owner, repo, path)
+        return when {
+            r.isSuccessful -> Outcome.Ok(
+                r.body().orEmpty().map { DirEntry(name = it.name, type = it.type, size = it.size) },
+            )
+            r.code() == 404 -> Outcome.NotFound(path)
+            r.code() == 401 -> Outcome.Unauthorized(readErr(r) ?: "Auth failed.")
+            else -> Outcome.Error(r.code(), readErr(r) ?: "GET dir contents failed (${r.code()})")
+        }
+    }
+
+    /**
      * Create or update a file. If [previousSha] is null we attempt to
      * create; on 422 ("sha is required") we fall back to GETting the
      * current sha and retrying with it. This handles the case where
@@ -259,6 +285,12 @@ class GitHubClient(private val pat: String) {
 
     @Serializable
     data class FileContent(val sha: String, val text: String)
+
+    /**
+     * Single entry from [listDirectory]. `type` is "file" or "dir".
+     */
+    @Serializable
+    data class DirEntry(val name: String, val type: String, val size: Long = 0L)
 
     companion object {
         private const val TAG = "Mythara/Memory"

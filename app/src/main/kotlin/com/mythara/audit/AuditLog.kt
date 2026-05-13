@@ -88,7 +88,31 @@ interface AuditDao {
 
     @Query("DELETE FROM audit_entries WHERE ts_millis < :cutoffMillis")
     suspend fun pruneBefore(cutoffMillis: Long): Int
+
+    /**
+     * Every distinct device id we've ever stamped on an audit row.
+     * Used by the `list_mythara_devices` agent tool as a fallback /
+     * supplement to the canonical "list files in device_messages/inbox/"
+     * lookup — covers devices that have made audited actions even if
+     * they haven't yet exchanged inbox messages.
+     */
+    @Query(
+        """
+        SELECT device_id, MAX(ts_millis) AS last_seen_ms, COUNT(*) AS entries
+        FROM audit_entries
+        WHERE device_id IS NOT NULL AND device_id != ''
+        GROUP BY device_id
+        """,
+    )
+    suspend fun listDistinctDevices(): List<DistinctDeviceRow>
 }
+
+/** One row per device id known to the audit log. */
+data class DistinctDeviceRow(
+    @ColumnInfo(name = "device_id") val deviceId: String,
+    @ColumnInfo(name = "last_seen_ms") val lastSeenMs: Long,
+    val entries: Int,
+)
 
 @Database(entities = [AuditEntry::class], version = 3, exportSchema = false)
 abstract class AuditDb : RoomDatabase() {
