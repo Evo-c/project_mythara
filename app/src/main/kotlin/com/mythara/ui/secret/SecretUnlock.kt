@@ -41,6 +41,12 @@ import com.mythara.ui.theme.MytharaColors
 fun SecretUnlockDialog(
     onUnlocked: () -> Unit,
     onDismiss: () -> Unit,
+    /**
+     * Lambda the host Activity provides to launch BiometricPrompt with
+     * Secret-mode copy. First arg fires on success, second on cancel/error
+     * (with optional error message).
+     */
+    onBiometricRequest: (onSuccess: () -> Unit, onFailure: (String?) -> Unit) -> Unit,
     vm: SecretViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsState()
@@ -53,6 +59,21 @@ fun SecretUnlockDialog(
         }
     }
 
+    // Auto-fire biometric the moment the dialog opens with biometric enabled
+    // and the user hasn't explicitly fallen back to password. The user can
+    // cancel the system prompt and tap "use password instead" to flip
+    // `biometricSkipped` and render the verify form.
+    LaunchedEffect(state.biometricEnabled, state.biometricSkipped, state.isSetupMode) {
+        if (state.biometricEnabled && !state.biometricSkipped && !state.isSetupMode) {
+            onBiometricRequest(
+                { vm.onBiometricSucceeded() },
+                { msg -> vm.onBiometricFailed(msg) },
+            )
+        }
+    }
+
+    val biometricPath = state.biometricEnabled && !state.biometricSkipped && !state.isSetupMode
+
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
 
@@ -61,7 +82,11 @@ fun SecretUnlockDialog(
         containerColor = MytharaColors.Surface,
         title = {
             Text(
-                text = if (state.isSetupMode) "set a secret password" else "secret mode",
+                text = when {
+                    state.isSetupMode -> "set a secret password"
+                    biometricPath     -> "biometric unlock"
+                    else              -> "secret mode"
+                },
                 color = MytharaColors.Fg,
                 style = MaterialTheme.typography.titleMedium,
             )
@@ -69,29 +94,38 @@ fun SecretUnlockDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = if (state.isSetupMode)
-                        "this is the password for Observe controls (later: continuous learning + memory tools). keep it different from your device PIN. minimum 6 characters."
-                    else
-                        "enter your secret password.",
+                    text = when {
+                        state.isSetupMode -> "this is the password for Observe controls (later: continuous learning + memory tools). keep it different from your device PIN. minimum 6 characters."
+                        biometricPath     -> "use face / fingerprint / device pin to continue. tap below to fall back to the secret password."
+                        else              -> "enter your secret password."
+                    },
                     color = MytharaColors.FgMute,
                     style = MaterialTheme.typography.bodySmall,
                 )
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    placeholder = { Text("password", color = MytharaColors.FgDim) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = MytharaColors.Fg,
-                        unfocusedTextColor = MytharaColors.Fg,
-                        focusedBorderColor = MytharaColors.Charple,
-                        unfocusedBorderColor = MytharaColors.SurfaceHigh,
-                        cursorColor = MytharaColors.Charple,
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
+
+                if (biometricPath) {
+                    TextButton(onClick = { vm.useFallbackPassword() }) {
+                        Text("${Glyph.Arrow} use password instead", color = MytharaColors.Charple)
+                    }
+                }
+                if (!biometricPath) {
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        placeholder = { Text("password", color = MytharaColors.FgDim) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = MytharaColors.Fg,
+                            unfocusedTextColor = MytharaColors.Fg,
+                            focusedBorderColor = MytharaColors.Charple,
+                            unfocusedBorderColor = MytharaColors.SurfaceHigh,
+                            cursorColor = MytharaColors.Charple,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 if (state.isSetupMode) {
                     OutlinedTextField(
                         value = confirm,
@@ -121,22 +155,42 @@ fun SecretUnlockDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (state.isSetupMode) vm.setup(password, confirm) else vm.verify(password)
-                },
-                enabled = !state.checking && password.isNotBlank() && (!state.isSetupMode || confirm.isNotBlank()),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MytharaColors.Charple, contentColor = MytharaColors.Fg,
-                ),
-            ) {
-                Text(
-                    text = when {
-                        state.checking -> "${Glyph.Ellipsis} checking"
-                        state.isSetupMode -> "${Glyph.Check} set + unlock"
-                        else -> "${Glyph.Check} unlock"
+            if (biometricPath) {
+                // Biometric mode: the system prompt does the unlocking; we just
+                // offer a retry button in case the auto-fire didn't reach the
+                // system (e.g. system was busy). On most paths the dialog
+                // closes before this is ever tappable.
+                Button(
+                    onClick = {
+                        onBiometricRequest(
+                            { vm.onBiometricSucceeded() },
+                            { msg -> vm.onBiometricFailed(msg) },
+                        )
                     },
-                )
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MytharaColors.Charple, contentColor = MytharaColors.Fg,
+                    ),
+                ) {
+                    Text("${Glyph.Refresh} prompt again")
+                }
+            } else {
+                Button(
+                    onClick = {
+                        if (state.isSetupMode) vm.setup(password, confirm) else vm.verify(password)
+                    },
+                    enabled = !state.checking && password.isNotBlank() && (!state.isSetupMode || confirm.isNotBlank()),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MytharaColors.Charple, contentColor = MytharaColors.Fg,
+                    ),
+                ) {
+                    Text(
+                        text = when {
+                            state.checking -> "${Glyph.Ellipsis} checking"
+                            state.isSetupMode -> "${Glyph.Check} set + unlock"
+                            else -> "${Glyph.Check} unlock"
+                        },
+                    )
+                }
             }
         },
         dismissButton = {

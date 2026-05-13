@@ -56,9 +56,14 @@ class AppAuth {
 
     enum class Status { Ready, NoScreenLock, NoHardware, HardwareUnavailable, UpdateRequired, Unsupported }
 
-    fun authenticate(activity: FragmentActivity, callback: (Result) -> Unit) {
+    fun authenticate(
+        activity: FragmentActivity,
+        title: String = "Unlock Mythara",
+        subtitle: String = "Authenticate to continue",
+        callback: (Result) -> Unit,
+    ) {
         when (val s = status(activity)) {
-            Status.Ready -> doPrompt(activity, callback)
+            Status.Ready -> doPrompt(activity, title, subtitle, callback)
             Status.NoScreenLock -> callback(
                 Result.Error(
                     "Set a device screen lock (PIN, pattern, or password) in Settings to use Mythara.",
@@ -77,7 +82,12 @@ class AppAuth {
         }
     }
 
-    private fun doPrompt(activity: FragmentActivity, callback: (Result) -> Unit) {
+    private fun doPrompt(
+        activity: FragmentActivity,
+        title: String,
+        subtitle: String,
+        callback: (Result) -> Unit,
+    ) {
         val executor = ContextCompat.getMainExecutor(activity)
         val prompt = BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
@@ -105,8 +115,8 @@ class AppAuth {
         // button is suppressed — so we deliberately don't call
         // setNegativeButtonText(). (Setting it throws IllegalArgumentException.)
         val info = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Unlock Mythara")
-            .setSubtitle("Authenticate to continue")
+            .setTitle(title)
+            .setSubtitle(subtitle)
             .setAllowedAuthenticators(BIOMETRIC_STRONG or DEVICE_CREDENTIAL)
             .build()
         prompt.authenticate(info)

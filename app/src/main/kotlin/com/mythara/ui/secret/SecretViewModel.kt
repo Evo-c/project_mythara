@@ -30,6 +30,11 @@ class SecretViewModel @Inject constructor(
         val error: String? = null,
         val unlocked: Boolean = false,
         val cooldownRemainingMs: Long = 0L,
+        /** True when the user has opted into biometric unlock from Secret Settings. */
+        val biometricEnabled: Boolean = false,
+        /** True when the user has explicitly opted out of biometric for this dialog session
+         *  (e.g. tapped "use password instead"). Resets to false on each new dialog open. */
+        val biometricSkipped: Boolean = false,
     )
 
     private val _state = MutableStateFlow(State())
@@ -38,8 +43,33 @@ class SecretViewModel @Inject constructor(
     fun probe() {
         viewModelScope.launch {
             val isSetup = !store.hasPassword()
-            _state.update { it.copy(isSetupMode = isSetup, error = null) }
+            val bio = store.useBiometric() && !isSetup
+            _state.update {
+                it.copy(
+                    isSetupMode = isSetup,
+                    biometricEnabled = bio,
+                    biometricSkipped = false,
+                    error = null,
+                )
+            }
         }
+    }
+
+    /** Called by the dialog when the user taps "use password instead". */
+    fun useFallbackPassword() {
+        _state.update { it.copy(biometricSkipped = true, error = null) }
+    }
+
+    /** Called by the Activity-bound biometric callback on success. */
+    fun onBiometricSucceeded() {
+        _state.update { it.copy(unlocked = true, error = null) }
+    }
+
+    /** Called by the Activity-bound biometric callback on cancel/failure.
+     *  We drop to the password fallback rather than closing the dialog —
+     *  the user might just want to type the password instead. */
+    fun onBiometricFailed(message: String?) {
+        _state.update { it.copy(biometricSkipped = true, error = message) }
     }
 
     fun setup(password: String, confirm: String) {

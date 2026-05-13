@@ -42,6 +42,12 @@ import androidx.compose.runtime.setValue
 @Composable
 fun MytharaRoot(
     onUnlockRequest: () -> Unit,
+    /**
+     * Triggered when the Secret-mode unlock dialog wants to authenticate via
+     * the device biometric / credential. The Activity wires this through
+     * [com.mythara.auth.AppAuth] with a Secret-specific title.
+     */
+    onSecretAuthRequest: (onSuccess: () -> Unit, onFailure: (String?) -> Unit) -> Unit,
     authErrorMessage: String? = null,
 ) {
     val authVm: AuthViewModel = hiltViewModel()
@@ -90,6 +96,7 @@ fun MytharaRoot(
                                 nav.navigate(Routes.SecretSettings)
                             },
                             onDismiss = { secretUnlockOpen = false },
+                            onBiometricRequest = onSecretAuthRequest,
                         )
                     }
                 }

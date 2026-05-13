@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -113,6 +114,26 @@ fun SecretSettingsScreen(
                     color = MytharaColors.Fg, style = MaterialTheme.typography.bodyMedium,
                 )
             }
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        Panel("unlock method") {
+            ToggleRow(
+                label = "use biometric (face / fingerprint / device pin)",
+                on = state.biometricUnlock,
+                onToggle = { vm.setBiometricUnlock(it) },
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = if (state.biometricUnlock) {
+                    "${Glyph.AccentBar} triple-tap → biometric prompt. password is still the fallback (tap 'use password instead' in the dialog)."
+                } else {
+                    "${Glyph.AccentBar} triple-tap → password form. enable the toggle above to use device biometric instead."
+                },
+                color = MytharaColors.FgDim,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
 
         Spacer(Modifier.height(14.dp))
@@ -407,5 +428,28 @@ private fun Bullet(text: String) {
         Text(Glyph.Dot, color = MytharaColors.Bok, style = MaterialTheme.typography.bodySmall)
         Spacer(Modifier.padding(end = 6.dp))
         Text(text = text, color = MytharaColors.FgMute, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun ToggleRow(label: String, on: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onToggle(!on) }
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = if (on) Glyph.CircleFilled else Glyph.CircleOutline,
+            color = if (on) MytharaColors.Charple else MytharaColors.FgMute,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Spacer(Modifier.padding(end = 8.dp))
+        Text(
+            text = label,
+            color = MytharaColors.Fg,
+            style = MaterialTheme.typography.bodyMedium,
+        )
     }
 }

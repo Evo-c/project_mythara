@@ -4,13 +4,16 @@ import android.content.Context
 import android.util.Base64
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import java.security.MessageDigest
 import java.security.SecureRandom
 import javax.crypto.SecretKeyFactory
@@ -45,6 +48,7 @@ class SecretAuthStore @Inject constructor(@ApplicationContext private val ctx: C
     private val keyHash           = stringPreferencesKey("hash.b64")
     private val keyFailedAttempts = intPreferencesKey("attempts.failed")
     private val keyCooldownUntil  = longPreferencesKey("cooldown.untilMs")
+    private val keyUseBiometric   = booleanPreferencesKey("unlock.useBiometric")
 
     suspend fun hasPassword(): Boolean {
         val p = ctx.store.data.first()
@@ -101,7 +105,21 @@ class SecretAuthStore @Inject constructor(@ApplicationContext private val ctx: C
         ctx.store.edit {
             it.remove(keySalt); it.remove(keyHash)
             it.remove(keyFailedAttempts); it.remove(keyCooldownUntil)
+            it.remove(keyUseBiometric)
         }
+    }
+
+    /**
+     * Whether the user has opted into biometric / device-credential unlock
+     * for the Secret-mode gate. Disabled by default; can only be flipped on
+     * *after* a password is set (so there's always a fallback path).
+     */
+    suspend fun useBiometric(): Boolean = ctx.store.data.first()[keyUseBiometric] ?: false
+
+    fun useBiometricFlow(): Flow<Boolean> = ctx.store.data.map { it[keyUseBiometric] ?: false }
+
+    suspend fun setUseBiometric(enabled: Boolean) {
+        ctx.store.edit { it[keyUseBiometric] = enabled }
     }
 
     private fun derive(plain: String, salt: ByteArray): ByteArray {

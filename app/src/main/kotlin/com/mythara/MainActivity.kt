@@ -55,7 +55,7 @@ class MainActivity : FragmentActivity() {
         setContent {
             MytharaRoot(
                 onUnlockRequest = {
-                    appAuth.authenticate(this) { result ->
+                    appAuth.authenticate(this, title = "Unlock Mythara") { result ->
                         when (result) {
                             AppAuth.Result.Success -> {
                                 lastAuthError = null
@@ -67,11 +67,23 @@ class MainActivity : FragmentActivity() {
                             }
                             is AppAuth.Result.Error -> {
                                 lastAuthError = result.message
-                                // Force a recomposition by toggling lock state
-                                // (no-op if already locked, but updates the
-                                // error message captured by the gate).
                                 authManager.lock()
                             }
+                        }
+                    }
+                },
+                onSecretAuthRequest = { onSuccess, onFailure ->
+                    // Same BiometricPrompt machinery; different copy so the
+                    // user sees they're crossing a second-tier gate.
+                    appAuth.authenticate(
+                        this,
+                        title = "Unlock Mythara secrets",
+                        subtitle = "Authenticate to enter Observe mode",
+                    ) { result ->
+                        when (result) {
+                            AppAuth.Result.Success -> onSuccess()
+                            AppAuth.Result.Canceled -> onFailure(null)
+                            is AppAuth.Result.Error -> onFailure(result.message)
                         }
                     }
                 },

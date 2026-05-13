@@ -7,6 +7,7 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.mythara.secret.SecretAuthStore
 import com.mythara.secret.observe.ObserveSession
 import com.mythara.secret.observe.ObserveState
 import com.mythara.secret.observe.ObserveStore
@@ -32,6 +33,7 @@ class SecretSettingsViewModel @Inject constructor(
     private val store: ObserveStore,
     private val voskModel: VoskModelStore,
     private val session: ObserveSession,
+    private val secretAuth: SecretAuthStore,
 ) : ViewModel() {
 
     data class State(
@@ -44,6 +46,8 @@ class SecretSettingsViewModel @Inject constructor(
         val modelState: VoskModelStore.State = VoskModelStore.State.Missing,
         val transcriptCount: Int = 0,
         val recentTranscripts: List<TranscriptPreview> = emptyList(),
+        /** True when the user has opted into biometric unlock for Secret mode. */
+        val biometricUnlock: Boolean = false,
     ) {
         val readyToStart: Boolean
             get() = micGranted && (!notifRequired || notifGranted) && modelState is VoskModelStore.State.Ready
@@ -58,8 +62,6 @@ class SecretSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             store.state.collect { s ->
                 _state.update { it.copy(observeState = s) }
-                // Whenever we transition into Running, refresh the recent
-                // transcripts list so the user sees them appear live.
                 if (s is ObserveState.Running) refreshTranscripts()
             }
         }
@@ -68,8 +70,19 @@ class SecretSettingsViewModel @Inject constructor(
                 _state.update { it.copy(modelState = ms) }
             }
         }
+        viewModelScope.launch {
+            secretAuth.useBiometricFlow().collect { enabled ->
+                _state.update { it.copy(biometricUnlock = enabled) }
+            }
+        }
         refreshPermission()
         refreshTranscripts()
+    }
+
+    fun setBiometricUnlock(enabled: Boolean) {
+        viewModelScope.launch {
+            secretAuth.setUseBiometric(enabled)
+        }
     }
 
     fun ensureModel() {
