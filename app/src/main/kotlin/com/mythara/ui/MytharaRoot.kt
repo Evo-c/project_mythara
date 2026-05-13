@@ -50,6 +50,14 @@ fun MytharaRoot(
      */
     onSecretAuthRequest: (onSuccess: () -> Unit, onFailure: (String?) -> Unit) -> Unit,
     authErrorMessage: String? = null,
+    /**
+     * WindowSizeClass from the activity. When width is Medium or Expanded
+     * (unfolded foldables, tablets, wide windows on Chrome OS / DeX),
+     * MytharaRoot renders a two-pane layout — chat always on the left,
+     * settings / people / about / secret on the right. Compact width
+     * (typical phone portrait) keeps the existing single-pane NavHost.
+     */
+    windowSize: androidx.compose.material3.windowsizeclass.WindowSizeClass? = null,
 ) {
     val authVm: AuthViewModel = hiltViewModel()
     val authState by authVm.state.collectAsState()
@@ -93,34 +101,50 @@ fun MytharaRoot(
                         }
                     }
 
-                    NavHost(navController = nav, startDestination = Routes.Chat) {
-                        composable(Routes.Chat) {
-                            ChatScreen(
-                                onOpenSettings = { nav.navigate(Routes.Settings) },
-                                onOpenPeople = { nav.navigate(Routes.People) },
-                            )
+                    // Width-based layout pivot. Compact width = single-
+                    // pane NavHost (the existing phone path). Medium /
+                    // Expanded = side-by-side: chat permanently on the
+                    // left, secondary destinations (settings / people /
+                    // about / secret) opening on the right pane. The
+                    // right pane gets its own NavController so right-
+                    // side navigation doesn't replace the chat surface.
+                    val isExpanded = windowSize != null &&
+                        windowSize.widthSizeClass != androidx.compose.material3.windowsizeclass.WindowWidthSizeClass.Compact
+
+                    if (!isExpanded) {
+                        NavHost(navController = nav, startDestination = Routes.Chat) {
+                            composable(Routes.Chat) {
+                                ChatScreen(
+                                    onOpenSettings = { nav.navigate(Routes.Settings) },
+                                    onOpenPeople = { nav.navigate(Routes.People) },
+                                )
+                            }
+                            composable(Routes.Settings) {
+                                SettingsScreen(
+                                    onBack = { nav.popBackStack() },
+                                    onOpenAbout = { nav.navigate(Routes.About) },
+                                    onOpenPeople = { nav.navigate(Routes.People) },
+                                )
+                            }
+                            composable(Routes.People) {
+                                com.mythara.ui.analytics.PeopleScreen(
+                                    onBack = { nav.popBackStack() },
+                                )
+                            }
+                            composable(Routes.About) {
+                                AboutScreen(
+                                    onBack = { nav.popBackStack() },
+                                    onSecretRequest = { secretUnlockOpen = true },
+                                )
+                            }
+                            composable(Routes.SecretSettings) {
+                                SecretSettingsScreen(onBack = { nav.popBackStack() })
+                            }
                         }
-                        composable(Routes.Settings) {
-                            SettingsScreen(
-                                onBack = { nav.popBackStack() },
-                                onOpenAbout = { nav.navigate(Routes.About) },
-                                onOpenPeople = { nav.navigate(Routes.People) },
-                            )
-                        }
-                        composable(Routes.People) {
-                            com.mythara.ui.analytics.PeopleScreen(
-                                onBack = { nav.popBackStack() },
-                            )
-                        }
-                        composable(Routes.About) {
-                            AboutScreen(
-                                onBack = { nav.popBackStack() },
-                                onSecretRequest = { secretUnlockOpen = true },
-                            )
-                        }
-                        composable(Routes.SecretSettings) {
-                            SecretSettingsScreen(onBack = { nav.popBackStack() })
-                        }
+                    } else {
+                        TwoPaneLayout(
+                            onSecretUnlockRequest = { secretUnlockOpen = true },
+                        )
                     }
 
                     if (secretUnlockOpen) {

@@ -70,7 +70,9 @@ class MainActivity : FragmentActivity() {
         )
 
         setContent {
+            val windowSize = androidx.compose.material3.windowsizeclass.calculateWindowSizeClass(this)
             MytharaRoot(
+                windowSize = windowSize,
                 onUnlockRequest = {
                     appAuth.authenticate(this, title = "Unlock Mythara") { result ->
                         when (result) {
