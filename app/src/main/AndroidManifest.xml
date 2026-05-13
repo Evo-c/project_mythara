@@ -227,6 +227,21 @@
             android:foregroundServiceType="microphone"
             tools:targetApi="34" />
 
+        <!-- Notification quick-reply receiver. Catches the
+             RemoteInput-driven reply text from the inline-text
+             notification action (works on the lockscreen, in the
+             shade, AND from Wear OS connected watches) and feeds
+             it into AgentRunner.submit — same pipeline as typing
+             in the chat composer, without the user ever opening
+             the app. -->
+        <receiver
+            android:name=".agent.NotificationReplyReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.mythara.action.NOTIFICATION_REPLY" />
+            </intent-filter>
+        </receiver>
+
         <!-- Boot + app-update receiver. Wakes Mythara's process the
              moment the device finishes booting (or after an app
              update), so the assistant is ready without the user

@@ -7,8 +7,10 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.RemoteInput
 import com.mythara.MainActivity
 import com.mythara.R
+import com.mythara.agent.NotificationReplyReceiver
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -65,9 +67,57 @@ class QuickTalkNotification @Inject constructor(
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        // Reply action — inline RemoteInput. From the lockscreen,
+        // shade, or a Wear OS watch you can type (or speak via
+        // watch dictation) a quick prompt to Lumi without
+        // unlocking + opening the app.
+        val replyRemoteInput = RemoteInput.Builder(NotificationReplyReceiver.KEY_REPLY_TEXT)
+            .setLabel("Ask Lumi")
+            .setAllowFreeFormInput(true)
+            .setChoices(arrayOf(
+                "What's on today?",
+                "Read my notifications",
+                "Where am I?",
+            ))
+            .build()
+        val replyIntent = Intent(ctx, NotificationReplyReceiver::class.java).apply {
+            action = NotificationReplyReceiver.ACTION_NOTIFICATION_REPLY
+        }
+        val replyPi = PendingIntent.getBroadcast(
+            ctx,
+            REQUEST_REPLY,
+            replyIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+        )
+        val replyAction = NotificationCompat.Action.Builder(
+            R.mipmap.ic_launcher_round,
+            "Type",
+            replyPi,
+        )
+            .addRemoteInput(replyRemoteInput)
+            .setAllowGeneratedReplies(true)
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+            .setShowsUserInterface(false)
+            .build()
+
+        // Voice action — opens MainActivity with ACTION_ASSIST so
+        // the same VoiceActionStore path Pixel Buds use kicks the
+        // STT loop. On Wear OS this surfaces as a mic icon on the
+        // notification card.
+        val voiceAction = NotificationCompat.Action.Builder(
+            R.mipmap.ic_launcher_round,
+            "Talk",
+            tapPi,
+        ).build()
+
+        // Wear OS extender — same two actions, marked as bridged.
+        val wearable = NotificationCompat.WearableExtender()
+            .addAction(replyAction)
+            .addAction(voiceAction)
+
         val notification = NotificationCompat.Builder(ctx, CHANNEL_ID)
             .setContentTitle("Talk to Lumi")
-            .setContentText("Tap anywhere on this notification to speak.")
+            .setContentText("Tap to speak, or pull down for quick reply.")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(tapPi)
             .setOngoing(true)
@@ -75,16 +125,9 @@ class QuickTalkNotification @Inject constructor(
             .setShowWhen(false)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            // An explicit Talk action button in addition to the
-            // tap-area, so the affordance is obvious on devices
-            // that hide the body text in collapsed view.
-            .addAction(
-                NotificationCompat.Action.Builder(
-                    R.mipmap.ic_launcher_round,
-                    "Talk",
-                    tapPi,
-                ).build(),
-            )
+            .addAction(voiceAction)
+            .addAction(replyAction)
+            .extend(wearable)
             .build()
         nm.notify(NOTIFICATION_ID, notification)
     }
@@ -115,5 +158,6 @@ class QuickTalkNotification @Inject constructor(
         private const val CHANNEL_ID = "mythara_quick_talk"
         private const val NOTIFICATION_ID = 0xA9E48 // distinct from AgentFGS's
         private const val REQUEST_TAP = 4071
+        private const val REQUEST_REPLY = 4075
     }
 }

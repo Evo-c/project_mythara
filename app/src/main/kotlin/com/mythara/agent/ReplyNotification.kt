@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.RemoteInput
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.mythara.MainActivity
@@ -67,12 +68,80 @@ class ReplyNotification @Inject constructor(
         // when the user pulls it down. Truncate to a sane cap for
         // the in-line view.
         val preview = replyText.take(MAX_PREVIEW_CHARS)
+
+        // Action 1: REPLY — inline text input via RemoteInput. Works
+        // on the lockscreen, in the notification shade, and on
+        // Wear OS connected watches (which surface it as a
+        // smart-reply chip + dictation field). The text routes
+        // through NotificationReplyReceiver → AgentRunner.submit
+        // without ever opening the app.
+        val replyRemoteInput = RemoteInput.Builder(NotificationReplyReceiver.KEY_REPLY_TEXT)
+            .setLabel("Reply to Lumi")
+            .setAllowFreeFormInput(true)
+            // Suggest 3 quick chips that work both on watch + phone.
+            // Wear OS surfaces these as tap-to-send canned replies.
+            .setChoices(arrayOf("Got it", "Tell me more", "Not now"))
+            .build()
+        val replyIntent = Intent(ctx, NotificationReplyReceiver::class.java).apply {
+            action = NotificationReplyReceiver.ACTION_NOTIFICATION_REPLY
+        }
+        val replyPi = PendingIntent.getBroadcast(
+            ctx,
+            REQUEST_REPLY,
+            replyIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+        )
+        val replyAction = NotificationCompat.Action.Builder(
+            R.mipmap.ic_launcher_round,
+            "Reply",
+            replyPi,
+        )
+            .addRemoteInput(replyRemoteInput)
+            .setAllowGeneratedReplies(true)
+            // SEMANTIC_ACTION_REPLY makes Wear OS treat this as a
+            // first-class reply slot (chip in the message gutter).
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+            .setShowsUserInterface(false) // critical for Wear inline-reply
+            .build()
+
+        // Action 2: VOICE — opens Mythara with mic listening
+        // (ACTION_ASSIST path; same as Pixel Buds tap-and-hold).
+        // Wear OS routes this to the watch's "tap to talk" surface
+        // when the user is wearing one.
+        val voiceIntent = Intent(ctx, MainActivity::class.java).apply {
+            action = Intent.ACTION_ASSIST
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        val voicePi = PendingIntent.getActivity(
+            ctx,
+            REQUEST_VOICE,
+            voiceIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val voiceAction = NotificationCompat.Action.Builder(
+            R.mipmap.ic_launcher_round,
+            "Voice",
+            voicePi,
+        ).build()
+
+        // Wearable extender. The Reply action is bridged to Wear
+        // automatically; setHintLaunchesActivity=false on actions
+        // already-bridged keeps them on the watch's notification
+        // card rather than forcing a phone launch.
+        val wearable = NotificationCompat.WearableExtender()
+            .addAction(replyAction)
+            .addAction(voiceAction)
+            // Big icon could go here later; default is fine.
+
         val notification = NotificationCompat.Builder(ctx, CHANNEL_ID)
             .setContentTitle("Lumi answered")
             .setContentText(preview)
             .setStyle(NotificationCompat.BigTextStyle().bigText(replyText))
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(tapPi)
+            .addAction(replyAction)
+            .addAction(voiceAction)
+            .extend(wearable)
             .setAutoCancel(true)
             .setOnlyAlertOnce(false)
             // PRIORITY_HIGH so the heads-up surface appears on
@@ -118,6 +187,8 @@ class ReplyNotification @Inject constructor(
         private const val CHANNEL_ID = "mythara_agent_reply"
         private const val NOTIFICATION_ID = 0xA9E49 // distinct from FGS + QuickTalk ids
         private const val REQUEST_TAP = 4072
+        private const val REQUEST_REPLY = 4073
+        private const val REQUEST_VOICE = 4074
         private const val MAX_PREVIEW_CHARS = 120
         /** Notification auto-dismisses after 5 min so old replies don't pile up. */
         private const val AUTO_DISMISS_MS = 5L * 60 * 1000
