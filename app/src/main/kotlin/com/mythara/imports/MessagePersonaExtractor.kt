@@ -61,14 +61,21 @@ class MessagePersonaExtractor @Inject constructor(
         val now = System.currentTimeMillis()
         var written = 0
 
-        // 1) Top contacts by user-sent message count. "Mostly texts
-        //    Mom and Sam" is one of the most useful persona facts.
-        val userMessages = messages.filter { it.isFromUser && !it.contact.isNullOrBlank() }
-        val byContact = userMessages
-            .groupingBy { it.contact!! }
-            .eachCount()
-            .toList()
-            .sortedByDescending { it.second }
+        // 1) Top contacts. Count every message whose `contact` field
+        //    is populated, regardless of direction — for WhatsApp
+        //    exports the user-sent rows have `contact=null` (only the
+        //    other party's name is in the export), so a user-only
+        //    grouping comes back empty and the analytics path never
+        //    learns about anyone. Counting incoming + outgoing-with-
+        //    known-contact handles SMS (where both sides carry a
+        //    contact) and WhatsApp (where only incoming does).
+        val userMessages = messages.filter { it.isFromUser }
+        val perContactCounts = HashMap<String, Int>()
+        for (m in messages) {
+            val name = m.contact?.takeIf { it.isNotBlank() } ?: continue
+            perContactCounts[name] = (perContactCounts[name] ?: 0) + 1
+        }
+        val byContact = perContactCounts.toList().sortedByDescending { it.second }
         if (byContact.isNotEmpty()) {
             val top = byContact.take(TOP_CONTACTS).joinToString(", ") { (name, count) -> "$name ($count)" }
             addPersonaFact(
@@ -139,12 +146,208 @@ class MessagePersonaExtractor @Inject constructor(
             Log.d(TAG, "skipping gemma pass — model not loaded")
         }
 
+        // 6) PER-CONTACT pass. The user persona pass above is about
+        //    the USER — it sees only outgoing messages, never tags
+        //    learnings with a contact facet. That means imported
+        //    WhatsApp history with Mom never lands in Mom's profile
+        //    on the People screen — exactly the gap the user reported.
+        //
+        //    For each top contact in the import (above the
+        //    MIN_PER_CONTACT_MESSAGES threshold), we now:
+        //      - persist the back-and-forth itself as
+        //        kind:message-history rows facetted with
+        //        contact:<name>, direction:incoming|outgoing — same
+        //        shape the live notification path uses. This lets
+        //        ContactAnalyticsBuilder count interactions, find
+        //        topics, and run its own Gemma summary / Big Five
+        //        / key-points passes over real conversation text.
+        //      - run a quick Gemma pass over the CONTACT's own
+        //        messages to lift contact-specific facts (their
+        //        topics, their voice) and store them too.
+        if (byContact.isNotEmpty()) {
+            val topContacts = byContact.take(MAX_CONTACTS_PER_IMPORT)
+            for ((contactName, count) in topContacts) {
+                if (count < MIN_PER_CONTACT_MESSAGES) continue
+                val perContactWritten = ingestContact(source, contactName, messages, now)
+                written += perContactWritten
+                Log.d(TAG, "per-contact ingest for $contactName: $perContactWritten records")
+            }
+        }
+
         return Report(
             ok = true,
             recordsWritten = written,
             messagesAnalyzed = messages.size,
         )
     }
+
+    /**
+     * Persist a contact's import history into the vault facetted with
+     * `contact:<name>` so [com.mythara.analytics.ContactAnalyticsBuilder]
+     * folds it into the per-contact profile on the People screen.
+     *
+     * Two flavours of record:
+     *  - `kind:message-history` — one row per chunk of conversation
+     *    (40-60 messages compacted into a single text excerpt), so the
+     *    builder's Gemma summary / Big Five / key-points passes have
+     *    real back-and-forth language to work from. Stored at the
+     *    working tier with `source:import-whatsapp` etc. — the
+     *    self-organizer can later promote these to episodic.
+     *  - `kind:contact-trait` — durable facts Gemma extracts from
+     *    THIS contact's messages (topics they care about, their
+     *    style). Semantic tier; same shape as the user-persona
+     *    records but contact-scoped.
+     *
+     * Both gated by Gemma's availability — heuristic-only fallback
+     * still writes the message-history rows (no LLM cost) so the
+     * People screen at least shows interaction counts and topics
+     * from facets the builder pulls.
+     */
+    private suspend fun ingestContact(
+        source: String,
+        contactName: String,
+        allMessages: List<MessageRecord>,
+        now: Long,
+    ): Int {
+        val convo = allMessages.filter {
+            it.contact?.equals(contactName, ignoreCase = true) == true ||
+                (it.isFromUser && hasNearbyContactMessages(it, allMessages, contactName))
+        }
+        if (convo.isEmpty()) return 0
+        var written = 0
+
+        // a) Persist conversation excerpts as message-history rows.
+        //    Even if Gemma isn't loaded, these enable the analytics
+        //    builder to count interactions and surface topics from
+        //    facets.
+        val chunks = chunkConversation(convo)
+        for (chunk in chunks.take(MAX_HISTORY_CHUNKS_PER_CONTACT)) {
+            val excerpt = buildBidirectionalTranscript(chunk).take(HISTORY_EXCERPT_MAX_CHARS)
+            if (excerpt.isBlank()) continue
+            val incomingInChunk = chunk.count { !it.isFromUser }
+            val outgoingInChunk = chunk.count { it.isFromUser }
+            val facets = buildList {
+                add("kind:message-history")
+                add("source:import-$source")
+                add("contact:$contactName")
+                add("app:com.whatsapp")
+                add("direction:both")
+                add("imported:true")
+            }
+            val ok = runCatching {
+                vault.add(
+                    content = excerpt,
+                    tier = Tier.Working,
+                    src = "msg:import-$source",
+                    facets = facets,
+                    embedding = null,
+                    embModel = null,
+                    conf = 0.7,
+                    now = now,
+                )
+            }.getOrDefault(false)
+            if (ok) written++
+            Log.d(TAG, "  history chunk for $contactName: ${chunk.size} msgs (${incomingInChunk} in / ${outgoingInChunk} out) → ok=$ok")
+        }
+
+        // b) Gemma pass on the contact's OWN messages to extract
+        //    contact-specific traits. Skip when Gemma not loaded —
+        //    the builder will produce summary / Big Five / key
+        //    points later from the message-history rows above.
+        if (gemma.isReady()) {
+            val theirMessages = convo.filter { !it.isFromUser }
+            if (theirMessages.size >= MIN_PER_CONTACT_GEMMA_SAMPLE) {
+                val theirChunks = chunkMessages(theirMessages).take(GEMMA_MAX_CHUNKS_PER_CONTACT)
+                val collected = mutableListOf<String>()
+                for (chunk in theirChunks) {
+                    val transcript = buildTranscript(chunk)
+                    val result = runCatching { gemma.extractWithMood(transcript) }.getOrNull() ?: continue
+                    for (fact in result.facts) {
+                        if (fact.content.isNotBlank()) collected.add(fact.content.trim())
+                    }
+                }
+                val unique = mutableListOf<String>()
+                for (line in collected) {
+                    val lower = line.lowercase()
+                    if (unique.none { it.lowercase().contains(lower) || lower.contains(it.lowercase()) }) {
+                        unique.add(line)
+                    }
+                }
+                for (line in unique.take(MAX_CONTACT_TRAITS)) {
+                    val facets = buildList {
+                        add("kind:contact-trait")
+                        add("source:import-$source")
+                        add("contact:$contactName")
+                        add("trait:gemma-extracted-import")
+                    }
+                    val ok = runCatching {
+                        vault.add(
+                            content = line,
+                            tier = Tier.Semantic,
+                            src = "persona:import-$source",
+                            facets = facets,
+                            embedding = null,
+                            embModel = null,
+                            conf = 0.8,
+                            now = now,
+                        )
+                    }.getOrDefault(false)
+                    if (ok) written++
+                }
+            }
+        }
+
+        return written
+    }
+
+    /**
+     * Some imports lose the contact attribution on user-sent rows
+     * (it.contact is null when isFromUser is true). To reconstruct
+     * the "user → contactName" thread we use a sliding-window
+     * heuristic: a user-sent message belongs to the conversation
+     * with contactName if a message from contactName appears within
+     * NEARBY_WINDOW positions in the import order.
+     */
+    private fun hasNearbyContactMessages(
+        userMsg: MessageRecord,
+        all: List<MessageRecord>,
+        contactName: String,
+    ): Boolean {
+        val idx = all.indexOf(userMsg)
+        if (idx < 0) return false
+        val lo = (idx - NEARBY_WINDOW).coerceAtLeast(0)
+        val hi = (idx + NEARBY_WINDOW).coerceAtMost(all.size - 1)
+        for (i in lo..hi) {
+            val m = all[i]
+            if (!m.isFromUser && m.contact?.equals(contactName, ignoreCase = true) == true) return true
+        }
+        return false
+    }
+
+    private fun chunkConversation(msgs: List<MessageRecord>): List<List<MessageRecord>> {
+        if (msgs.isEmpty()) return emptyList()
+        val out = mutableListOf<MutableList<MessageRecord>>()
+        var current = mutableListOf<MessageRecord>()
+        var currentChars = 0
+        for (m in msgs.sortedBy { it.tsMillis }) {
+            val len = m.text.length + 20
+            if (currentChars + len > HISTORY_EXCERPT_MAX_CHARS && current.isNotEmpty()) {
+                out.add(current)
+                current = mutableListOf()
+                currentChars = 0
+            }
+            current.add(m)
+            currentChars += len
+        }
+        if (current.isNotEmpty()) out.add(current)
+        return out
+    }
+
+    private fun buildBidirectionalTranscript(chunk: List<MessageRecord>): String =
+        chunk.joinToString("\n") { m ->
+            val who = if (m.isFromUser) "User" else (m.contact ?: "Other")
+            "$who: ${m.text}"
+        }
 
     /**
      * Build chunks of the user's outgoing messages and feed each to
@@ -337,6 +540,16 @@ class MessagePersonaExtractor @Inject constructor(
         private const val TOP_CONTACTS = 5
         private const val BAND_WIDTH = 4
         private const val STYLE_MIN_MESSAGES = 50
+
+        // Per-contact import tuning.
+        private const val MAX_CONTACTS_PER_IMPORT = 5
+        private const val MIN_PER_CONTACT_MESSAGES = 10
+        private const val MIN_PER_CONTACT_GEMMA_SAMPLE = 6
+        private const val MAX_HISTORY_CHUNKS_PER_CONTACT = 10
+        private const val HISTORY_EXCERPT_MAX_CHARS = 1_400
+        private const val GEMMA_MAX_CHUNKS_PER_CONTACT = 3
+        private const val MAX_CONTACT_TRAITS = 15
+        private const val NEARBY_WINDOW = 5
 
         // Gemma pass tuning.
         // CHUNK_MAX_CHARS sits below GemmaExtractor.MAX_TRANSCRIPT_CHARS

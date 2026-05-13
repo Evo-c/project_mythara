@@ -52,6 +52,7 @@ class MessageImportPanelViewModel @Inject constructor(
     private val extractor: MessagePersonaExtractor,
     private val imageIngestScheduler: ImageIngestScheduler,
     val imageIngestProgress: ImageIngestProgress,
+    private val analyticsBuilder: com.mythara.analytics.ContactAnalyticsBuilder,
 ) : ViewModel() {
 
     private val _status = MutableStateFlow<String?>(null)
@@ -81,7 +82,9 @@ class MessageImportPanelViewModel @Inject constructor(
                     _busy.value = false
                     return@launch
                 }
-            _status.value = "${Glyph.Check} learned ${report.recordsWritten} traits from ${report.messagesAnalyzed} SMS messages"
+            _status.value = "${Glyph.Check} learned ${report.recordsWritten} traits from ${report.messagesAnalyzed} SMS messages — rebuilding people profiles…"
+            runCatching { analyticsBuilder.rebuildAll(force = true) }
+            _status.value = "${Glyph.Check} learned ${report.recordsWritten} traits from ${report.messagesAnalyzed} SMS messages · people profiles updated"
             _busy.value = false
         }
     }
@@ -113,10 +116,15 @@ class MessageImportPanelViewModel @Inject constructor(
             val imageCount = out.imagePaths.size
             if (imageCount > 0) {
                 imageIngestScheduler.startIngest()
-                _status.value = "${Glyph.Check} learned ${report.recordsWritten} traits from ${report.messagesAnalyzed} messages — now slowly processing $imageCount photos in the background (~${imageCount} min)"
+                _status.value = "${Glyph.Check} learned ${report.recordsWritten} traits from ${report.messagesAnalyzed} messages — rebuilding people profiles + processing $imageCount photos in the background"
             } else {
-                _status.value = "${Glyph.Check} learned ${report.recordsWritten} traits from ${report.messagesAnalyzed} WhatsApp messages"
+                _status.value = "${Glyph.Check} learned ${report.recordsWritten} traits from ${report.messagesAnalyzed} WhatsApp messages — rebuilding people profiles…"
             }
+            // Kick the analytics builder so the People screen reflects
+            // the new conversation data immediately, not on the next
+            // daily worker tick.
+            runCatching { analyticsBuilder.rebuildAll(force = true) }
+            _status.value = "${Glyph.Check} learned ${report.recordsWritten} traits from ${report.messagesAnalyzed} WhatsApp messages · people profiles updated"
             _busy.value = false
         }
     }
