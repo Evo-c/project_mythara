@@ -385,6 +385,9 @@ fun SettingsScreen(
         AccessibilityPanel()
 
         Spacer(Modifier.height(16.dp))
+        AllowlistPanel()
+
+        Spacer(Modifier.height(16.dp))
         NotificationAccessPanel()
 
         Spacer(Modifier.height(16.dp))

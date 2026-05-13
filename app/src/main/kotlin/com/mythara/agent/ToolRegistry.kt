@@ -53,6 +53,10 @@ class ToolRegistry @Inject constructor(
     listAppsTool: ListAppsTool,
     spawnAgentTool: SpawnAgentTool,
     smsDirectTool: com.mythara.agent.tools.SmsDirectTool,
+    placeCallDirectTool: com.mythara.agent.tools.PlaceCallDirectTool,
+    tapTool: com.mythara.agent.tools.TapTool,
+    swipeTool: com.mythara.agent.tools.SwipeTool,
+    typeTextTool: com.mythara.agent.tools.TypeTextTool,
     private val gate: ConfirmationGate,
     private val allowlist: com.mythara.data.AllowlistStore,
 ) {
@@ -64,7 +68,8 @@ class ToolRegistry @Inject constructor(
         smsComposerTool, placeCallTool,
         flashlightTool, openAppTool, listAppsTool,
         spawnAgentTool,
-        smsDirectTool,
+        smsDirectTool, placeCallDirectTool,
+        tapTool, swipeTool, typeTextTool,
     )
     private val byName: Map<String, Tool> = tools.associateBy { it.name }
 
