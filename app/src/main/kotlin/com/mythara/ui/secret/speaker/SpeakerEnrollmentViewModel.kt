@@ -166,24 +166,46 @@ class SpeakerEnrollmentViewModel @Inject constructor(
             return
         }
         val buf = ShortArray(recorder.readFrameSamples)
+        // Vosk only marks an utterance "final" when it detects an
+        // end-of-utterance silence gap. If the user reads continuously
+        // (no pauses), acceptWaveForm never returns true and the spk
+        // x-vector is never emitted — the save button would stay
+        // disabled. To fix: every FORCE_FLUSH_MS, call finalResult
+        // ourselves to flush whatever's accumulated, capture the spk,
+        // and continue. We still honour natural utterance boundaries
+        // when they happen — both paths feed into captureFromJson.
+        var lastFlushMs = System.currentTimeMillis()
+        fun captureFromJson(json: String) {
+            val text = asr.parseText(json)
+            val spk = asr.parseSpk(json)
+            if (spk != null && spk.isNotEmpty()) {
+                collectedVectors += spk
+                _state.update {
+                    it.copy(
+                        samplesCollected = collectedVectors.size,
+                        partial = text.take(120),
+                    )
+                }
+                Log.d(TAG, "captured sample #${collectedVectors.size} (spk dim=${spk.size})")
+            } else if (text.isNotBlank()) {
+                Log.d(TAG, "got text but no spk vector — keep talking for ~1 more second")
+                _state.update { it.copy(partial = text.take(120)) }
+            }
+        }
         try {
             while (coroutineContext.coroutineJobActive) {
                 val n = recorder.read(buf)
                 if (n <= 0) continue
                 val isFinal = recognizer.acceptWaveForm(buf, n)
+                val now = System.currentTimeMillis()
                 if (isFinal) {
-                    val resultJson = recognizer.result
-                    val text = asr.parseText(resultJson)
-                    val spk = asr.parseSpk(resultJson)
-                    if (spk != null && spk.isNotEmpty()) {
-                        collectedVectors += spk
-                        _state.update {
-                            it.copy(
-                                samplesCollected = collectedVectors.size,
-                                partial = text.take(120),
-                            )
-                        }
-                    }
+                    captureFromJson(recognizer.result)
+                    lastFlushMs = now
+                } else if (now - lastFlushMs >= FORCE_FLUSH_MS) {
+                    // Continuous talk path — manually flush so we don't
+                    // need to wait for a natural silence.
+                    captureFromJson(recognizer.finalResult)
+                    lastFlushMs = now
                 } else {
                     val partial = runCatching {
                         org.json.JSONObject(recognizer.partialResult)
@@ -210,5 +232,12 @@ class SpeakerEnrollmentViewModel @Inject constructor(
 
     companion object {
         private const val TAG = "Mythara/SpkEnroll"
+        /**
+         * Force a Vosk `finalResult` flush every N ms during recording so
+         * each chunk of speech yields an x-vector even if the user
+         * doesn't pause. 3s captures a couple of natural utterances per
+         * flush, which the SpeakerVault then averages on save.
+         */
+        private const val FORCE_FLUSH_MS = 3_000L
     }
 }

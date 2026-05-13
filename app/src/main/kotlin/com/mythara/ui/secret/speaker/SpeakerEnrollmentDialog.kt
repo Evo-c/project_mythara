@@ -106,7 +106,7 @@ fun SpeakerEnrollmentDialog(vm: SpeakerEnrollmentViewModel) {
                     )
                     else -> Triple(
                         Glyph.CircleOutline, MytharaColors.FgMute,
-                        "tap record + say a few sentences in your normal voice",
+                        "tap record + read a short paragraph in your normal voice — samples count up every ~3 seconds",
                     )
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
