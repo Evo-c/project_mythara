@@ -86,6 +86,12 @@ fun SettingsScreen(
         }
 
         Spacer(Modifier.height(20.dp))
+        UserNamePanel()
+
+        Spacer(Modifier.height(16.dp))
+        AutoLockPanel()
+
+        Spacer(Modifier.height(16.dp))
         Panel("region") {
             Region.entries.forEach { r ->
                 RadioRow(

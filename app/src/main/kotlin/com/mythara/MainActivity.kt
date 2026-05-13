@@ -9,11 +9,13 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import com.mythara.auth.AppAuth
 import com.mythara.auth.AuthManager
 import com.mythara.ui.MytharaRoot
 import com.mythara.voice.VoiceActionStore
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
@@ -50,13 +52,19 @@ class MainActivity : FragmentActivity() {
         // capture it on both cold start and re-launch via singleTop.
         handleVoiceIntent(intent)
 
-        // Process-wide lifecycle observer: when Mythara is fully sent to
-        // the background, immediately flip the gate to Locked. Foreground
-        // brings AuthGate back up.
+        // Process-wide lifecycle observer with grace-period auto-lock.
+        // onStop fires when ALL Mythara activities are stopped — we
+        // record the timestamp but stay Unlocked. onStart on the way
+        // back consults AuthSettings.timeoutMs and decides whether to
+        // re-lock or pass through. The user's configured timeout is
+        // 5 minutes by default; "immediate" matches the old behaviour.
         ProcessLifecycleOwner.get().lifecycle.addObserver(
             object : DefaultLifecycleObserver {
                 override fun onStop(owner: LifecycleOwner) {
-                    authManager.lock()
+                    authManager.markBackgrounded()
+                }
+                override fun onStart(owner: LifecycleOwner) {
+                    lifecycleScope.launch { authManager.markForegrounded() }
                 }
             },
         )

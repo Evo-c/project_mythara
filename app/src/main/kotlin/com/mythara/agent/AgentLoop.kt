@@ -44,6 +44,7 @@ class AgentLoop @Inject constructor(
     private val history: HistoryRepository,
     private val registry: ToolRegistry,
     private val recall: SemanticRecall,
+    private val userNameStore: com.mythara.data.UserNameStore,
 ) {
 
     sealed interface Turn {
@@ -124,6 +125,27 @@ class AgentLoop @Inject constructor(
         // Final mood for downstream prosody (TTS pitch/rate, EL voice
         // settings). currentMood wins when present.
         val effectiveMood = currentMood ?: moodTrend
+
+        // User name. When the user has told Mythara what to call
+        // them ("What should I call you?" in Settings), inject a
+        // one-liner so the model uses it sparingly — at greeting,
+        // on acknowledgement, occasional callback — not every
+        // sentence. Empty string skips the injection.
+        val userName = runCatching { userNameStore.name() }.getOrDefault("")
+        val nameSystem: ChatMessage? = if (userName.isNotBlank()) {
+            ChatMessage(
+                role = "system",
+                content =
+                    "The user's name is $userName. Use it naturally and sparingly — " +
+                        "as a greeting (\"morning, $userName\"), acknowledgement " +
+                        "(\"got it, $userName\"), or occasional callback. " +
+                        "Do NOT sprinkle it through every sentence; that reads as " +
+                        "sycophantic and overformal. One use per reply is plenty; " +
+                        "zero is also fine.",
+            )
+        } else {
+            null
+        }
 
         // Temporal anchor — ALWAYS injected, every turn. The agent
         // gets the current local time + day + timezone + ISO so it
@@ -270,6 +292,7 @@ class AgentLoop @Inject constructor(
             // MiniMax weights earlier system messages more strongly
             // in our experience.
             val prior: List<ChatMessage> = buildList {
+                if (nameSystem != null) add(nameSystem) // user identity (sparingly used)
                 add(timeSystem)  // ALWAYS — current time/date/day-of-week/timezone
                 add(voiceSystem) // ALWAYS — conversational style default
                 if (ttsSystem != null) add(ttsSystem)
