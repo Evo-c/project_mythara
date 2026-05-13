@@ -59,14 +59,25 @@ class SkillRunner @Inject constructor(
         val trace = mutableListOf<String>()
         var failedAt: Int? = null
         var failedReason: String? = null
+        // Accumulate auto-learned hints across this run. Persisted
+        // at the end so a partial run still saves what it learned.
+        val learnedHints = mutableMapOf<Int, List<String>>()
 
         for ((index, step) in skill.steps.withIndex()) {
-            val ok = runCatching { executeStep(service, step, params, trace) }
-                .getOrElse { e ->
-                    failedReason = "step ${index} threw: ${e.message ?: e.javaClass.simpleName}"
-                    Log.w(TAG, "step $index threw", e)
-                    false
-                }
+            val (ok, learnedSelector) = runCatching {
+                executeStepWithLearning(service, skill, index, step, params, trace)
+            }.getOrElse { e ->
+                failedReason = "step ${index} threw: ${e.message ?: e.javaClass.simpleName}"
+                Log.w(TAG, "step $index threw", e)
+                false to null
+            }
+            if (learnedSelector != null) {
+                // Prepend the new selector; cap at MAX_HINTS to keep
+                // the skill record bounded. dedup preserves order.
+                val existing = (learnedHints[index] ?: skill.selectorHints[index] ?: emptyList())
+                val merged = (listOf(learnedSelector) + existing).distinct().take(MAX_HINTS)
+                learnedHints[index] = merged
+            }
             if (!ok) {
                 failedAt = index
                 if (failedReason == null) {
@@ -77,11 +88,17 @@ class SkillRunner @Inject constructor(
         }
 
         val now = System.currentTimeMillis()
+        // Merge any auto-learned selector hints back into the saved
+        // skill so subsequent runs use the discovered alternatives
+        // first. Empty-merge case is a no-op.
+        val mergedHints = if (learnedHints.isEmpty()) skill.selectorHints
+            else skill.selectorHints + learnedHints
         val finalSkill = if (failedAt == null) {
             skill.copy(
                 lastRunMs = now,
                 runCount = skill.runCount + 1,
                 successCount = skill.successCount + 1,
+                selectorHints = mergedHints,
             )
         } else {
             val screenSummary = runCatching {
@@ -102,6 +119,10 @@ class SkillRunner @Inject constructor(
                 lastRunMs = now,
                 runCount = skill.runCount + 1,
                 failures = (skill.failures + failure).takeLast(MAX_FAILURE_HISTORY),
+                // Persist anything we learned EVEN on failure — a
+                // step that succeeded via fuzzy recovery before the
+                // ultimate failure shouldn't lose its discovery.
+                selectorHints = mergedHints,
             )
         }
         // Persist outcome — agent reads failures on the next run.
@@ -129,6 +150,138 @@ class SkillRunner @Inject constructor(
             out = out.replace("{$k}", v)
         }
         return out
+    }
+
+    /**
+     * Run a step with three-tier resolution:
+     *   1. Run the configured step directly.
+     *   2. If it's a tap step and it failed, try every stored
+     *      selectorHint for this index in turn (most-recent first).
+     *   3. If those all fail, do a fuzzy scan — look for clickable
+     *      nodes whose text/desc/id loosely matches the target.
+     *
+     * Returns `(ok, learnedSelector)`:
+     *   - learnedSelector is non-null only when a recovery via
+     *     step 2 or 3 succeeded; caller persists it back to the
+     *     skill so the next run uses it directly.
+     */
+    private suspend fun executeStepWithLearning(
+        service: PhoneControlAccessibilityService,
+        skill: Skill,
+        stepIndex: Int,
+        step: SkillStep,
+        params: Map<String, String>,
+        trace: MutableList<String>,
+    ): Pair<Boolean, String?> {
+        val originalOk = executeStep(service, step, params, trace)
+        if (originalOk) return true to null
+
+        // Recovery only applies to tap steps — the others either
+        // succeed (open_app, wait, swipe-by-coord) or there's no
+        // sensible fallback (type_text needs a focused field).
+        val needle = tapNeedle(step, params) ?: return false to null
+
+        // Tier 2: stored hints from past recoveries.
+        val hints = skill.selectorHints[stepIndex].orEmpty()
+        for (hint in hints) {
+            val ok = tryHintSelector(service, hint)
+            if (ok) {
+                trace.add("recovered via hint '$hint' (step $stepIndex)")
+                return true to hint
+            }
+        }
+
+        // Tier 3: fuzzy scan against the current screen. Try
+        // multiple selector kinds + simple text variants in
+        // order of decreasing specificity.
+        val fuzzy = fuzzyRecover(service, needle, step, params, trace)
+        if (fuzzy != null) {
+            trace.add("learned new selector '$fuzzy' (step $stepIndex)")
+            return true to fuzzy
+        }
+        return false to null
+    }
+
+    /**
+     * Extract the user-facing "what we're looking for" string from a
+     * tap step, with param substitution. Null for non-tap steps.
+     */
+    private fun tapNeedle(step: SkillStep, params: Map<String, String>): String? = when (step) {
+        is SkillStep.TapText -> substitute(step.text, params)
+        is SkillStep.TapDesc -> substitute(step.desc, params)
+        is SkillStep.TapId -> step.id
+        else -> null
+    }
+
+    private suspend fun tryHintSelector(
+        service: PhoneControlAccessibilityService,
+        hint: String,
+    ): Boolean {
+        val (kind, value) = hint.split(":", limit = 2).let {
+            if (it.size == 2) it[0] to it[1] else return false
+        }
+        return when (kind) {
+            "text" -> service.tapNodeWithText(value)
+            "desc" -> service.tapNodeWithDesc(value)
+            "id" -> service.tapNodeWithId(value)
+            else -> false
+        }
+    }
+
+    /**
+     * Try a handful of selector variants based on the original
+     * needle. First match wins. Returns the stored-selector format
+     * ("kind:value") that worked, or null if nothing did.
+     *
+     * Strategy (descending specificity):
+     *   • original needle as text / desc / id
+     *   • lowercase variant
+     *   • "<needle> button" suffix (common content-desc pattern)
+     *   • trimmed last word ("Send message" → "Send")
+     */
+    private suspend fun fuzzyRecover(
+        service: PhoneControlAccessibilityService,
+        needle: String,
+        step: SkillStep,
+        params: Map<String, String>,
+        trace: MutableList<String>,
+    ): String? {
+        val candidates = buildList<Pair<String, suspend () -> Boolean>> {
+            // Pivot to the other-attribute lookups first since the
+            // original step already tried its own kind.
+            if (step !is SkillStep.TapText) add("text:$needle" to { service.tapNodeWithText(needle) })
+            if (step !is SkillStep.TapDesc) add("desc:$needle" to { service.tapNodeWithDesc(needle) })
+            if (step !is SkillStep.TapId) add("id:$needle" to { service.tapNodeWithId(needle) })
+
+            // Casing variants — apps sometimes change "Send" → "SEND" or "send"
+            val lower = needle.lowercase()
+            if (lower != needle) {
+                add("text:$lower" to { service.tapNodeWithText(lower) })
+                add("desc:$lower" to { service.tapNodeWithDesc(lower) })
+            }
+
+            // "<needle> button" — content-desc on icon buttons often
+            // includes "button" or the action name expanded
+            val withButton = "$needle button"
+            add("desc:$withButton" to { service.tapNodeWithDesc(withButton) })
+
+            // Strip common verb suffixes / leading articles to match
+            // shorter labels ("Send message" → "Send", "the Send" → "Send")
+            val firstWord = needle.trim().split(' ').firstOrNull()
+            if (!firstWord.isNullOrBlank() && firstWord != needle) {
+                add("text:$firstWord" to { service.tapNodeWithText(firstWord) })
+                add("desc:$firstWord" to { service.tapNodeWithDesc(firstWord) })
+            }
+        }
+
+        for ((selector, attempt) in candidates) {
+            val ok = runCatching { attempt() }.getOrDefault(false)
+            if (ok) {
+                trace.add("fuzzy hit on '$selector'")
+                return selector
+            }
+        }
+        return null
     }
 
     private suspend fun executeStep(
@@ -235,5 +388,12 @@ class SkillRunner @Inject constructor(
         private const val MAX_FAILURE_HISTORY = 10
         /** Cap on the screen-state summary stashed with a failure. */
         private const val MAX_SCREEN_SUMMARY = 1500
+
+        /**
+         * Per-step selector-hint cap. Keeps the Skill JSON bounded
+         * even if an app redesigns several times — old hints fall
+         * off the end as new ones land.
+         */
+        private const val MAX_HINTS = 5
     }
 }

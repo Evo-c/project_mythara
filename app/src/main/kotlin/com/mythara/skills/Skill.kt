@@ -55,6 +55,27 @@ data class Skill(
     val lastRunMs: Long? = null,
     val runCount: Int = 0,
     val successCount: Int = 0,
+
+    /**
+     * Auto-discovered alternative selectors per-step. When a tap step
+     * fails because the target app moved a button or renamed it, the
+     * runner does a fuzzy scan, finds the new element, AND records
+     * the working selector here so the next run uses it directly.
+     *
+     * Format: stepIndex → ordered list of selectors that worked,
+     * newest-first. Selector format is "<kind>:<value>" where kind
+     * is one of `text`, `desc`, `id`. Caller tries originals first,
+     * then hints in order, then a fuzzy fallback.
+     *
+     * Example: a `tap_desc("Send")` step that originally worked
+     * keeps the original ("desc:Send"). When WhatsApp updates and
+     * the button becomes "Send message", the runner finds it via
+     * fuzzy scan, taps it, and saves `["desc:Send message", "desc:Send"]`
+     * to selectorHints[stepIndex]. From the next run on, the hint
+     * runs first; if WhatsApp reverts, the original is still there
+     * as backup.
+     */
+    val selectorHints: Map<Int, List<String>> = emptyMap(),
 )
 
 /**
