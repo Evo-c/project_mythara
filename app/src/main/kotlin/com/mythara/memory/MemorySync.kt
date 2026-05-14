@@ -66,6 +66,7 @@ class MemorySync @Inject constructor(
     private val userAliases: com.mythara.data.UserAliasesStore,
     private val auditRepo: com.mythara.audit.AuditRepository,
     private val deviceMessageSync: com.mythara.memory.devices.DeviceMessageSync,
+    private val lifelineRepo: com.mythara.lifeline.LifelineRepository,
 ) {
     data class Report(
         val ok: Boolean,
@@ -389,6 +390,37 @@ class MemorySync @Inject constructor(
             }
         }
 
+        // ---- lifeline/<YYYY-MM>.jsonl — life-timeline photo metadata
+        //      + caption, partitioned by month. Photo bytes NEVER leave
+        //      the originating device; only the metadata + caption
+        //      ships, so the cross-device timeline reads "photo on
+        //      phone-B" when scrolling on phone-A without paying any
+        //      storage / bandwidth penalty for the raw image bytes.
+        if (cfg.syncLearnings) {
+            val unsyncedLifeline = runCatching { lifelineRepo.dao.listUnsynced() }.getOrDefault(emptyList())
+            if (unsyncedLifeline.isNotEmpty()) {
+                val byMonth: Map<String, List<com.mythara.lifeline.LifelineEntity>> =
+                    unsyncedLifeline.groupBy { isoYearMonth(it.takenMs) }
+                for ((month, rows) in byMonth) {
+                    val body = rows.joinToString("\n") { row ->
+                        json.encodeToString(LifelineExport.serializer(), row.toExport())
+                    }
+                    val path = "lifeline/$month.jsonl"
+                    // Line-union merge: same row id (device:mediaStoreId)
+                    // gets deduped via writeFileMerging's caller-supplied
+                    // merge fn. We just newline-append; the JSON Lines
+                    // semantics + (device_id + media_store_id) tuple keep
+                    // each device's writes idempotent.
+                    putWithCache(
+                        client, cfg, path, body, manifest,
+                        "mythara: lifeline/$month (+${rows.size})", written, skipped,
+                    )
+                }
+                val syncedNow = System.currentTimeMillis()
+                lifelineRepo.dao.markSynced(unsyncedLifeline.map { it.id }, syncedNow)
+            }
+        }
+
         // ---- device-to-device messaging (location requests etc.)
         //      Runs as a side-channel: pushes our pending outbox to
         //      every recipient's `device_messages/inbox/<id>.jsonl`
@@ -644,6 +676,49 @@ class MemorySync @Inject constructor(
                         incoming.map { com.mythara.data.UserAliasesStore.Alias(name = it.name, phone = it.phone) },
                     )
                     filesRead.add("analytics/user_aliases.json")
+                }
+            }
+        }
+
+        // lifeline/<YYYY-MM>.jsonl — restore foreign-device photos
+        // into the local lifeline DB so the chat scrollback can show
+        // the entire cross-device timeline. is_remote=true on inserted
+        // rows tells the UI the bytes aren't local; the caption +
+        // device label render in their place.
+        runCatching {
+            client.listDirectory(cfg.owner, cfg.repo, "lifeline")
+        }.getOrNull()?.let { listing ->
+            if (listing is Outcome.Ok) {
+                for (file in listing.value.filter { it.type == "file" && it.name.endsWith(".jsonl") }) {
+                    val read = runCatching {
+                        client.readFile(cfg.owner, cfg.repo, "lifeline/${file.name}")
+                    }.getOrNull()
+                    if (read !is Outcome.Ok) continue
+                    val incoming = read.value.text.lineSequence()
+                        .filter { it.isNotBlank() }
+                        .mapNotNull {
+                            runCatching { json.decodeFromString(LifelineExport.serializer(), it) }.getOrNull()
+                        }
+                        .toList()
+                    for (exp in incoming) {
+                        // Skip rows that originated on THIS device — we
+                        // already have the LOCAL version with the real
+                        // URI; restoring a remote-shaped row over it
+                        // would lose the local uri pointer.
+                        val myId = runCatching { deviceIdStore.id() }.getOrNull()
+                        if (exp.dev == myId) continue
+                        val existing = runCatching {
+                            lifelineRepo.dao.byLocalRef(exp.dev, exp.msi)
+                        }.getOrNull()
+                        if (existing != null) {
+                            // Re-pull: caption may have been refreshed on
+                            // the origin device. Upsert keeps things current.
+                            runCatching { lifelineRepo.dao.upsert(exp.toRow().copy(id = existing.id)) }
+                        } else {
+                            runCatching { lifelineRepo.dao.insertIfAbsent(exp.toRow()) }
+                        }
+                    }
+                    if (incoming.isNotEmpty()) filesRead.add("lifeline/${file.name}")
                 }
             }
         }
@@ -922,6 +997,15 @@ class MemorySync @Inject constructor(
         return "%04d-W%02d".format(yr, wk)
     }
 
+    /**
+     * `YYYY-MM` partition key for lifeline photos. Local time zone —
+     * the user thinks of "January" in their own clock, not UTC.
+     */
+    private fun isoYearMonth(ms: Long): String {
+        val dt = java.time.Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault())
+        return "%04d-%02d".format(dt.year, dt.monthValue)
+    }
+
     private fun isoUtc(ms: Long): String {
         if (ms <= 0L) return "never"
         val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
@@ -960,6 +1044,30 @@ class MemorySync @Inject constructor(
         val manufacturer: String,
         val androidSdk: Int,
         val lastSyncMs: Long,
+    )
+
+    /**
+     * One row in lifeline/<YYYY-MM>.jsonl. Metadata + caption only —
+     * no image bytes. The dev field is the device id that originated
+     * the photo, so cross-device hydration knows whose camera roll
+     * the entry belongs to (UI shows "📷 phone-B" when the image is
+     * not local to the current device).
+     */
+    @Serializable
+    data class LifelineExport(
+        val dev: String,
+        val msi: Long,                 // media-store id on the originating device
+        val ts: Long,                  // taken_ms
+        val mime: String,
+        val w: Int = 0,
+        val h: Int = 0,
+        val lat: Double? = null,
+        val lng: Double? = null,
+        val cap: String? = null,       // caption text
+        val capModel: String? = null,
+        val capAt: Long? = null,
+        val name: String? = null,      // display name
+        val place: String? = null,
     )
 
     /** Per-contact analytics row — one per line in
@@ -1229,4 +1337,54 @@ private fun com.mythara.analytics.ContactProfileRow.toExport(deviceId: String): 
         personalityInsights = personalityInsights,
         lastBuiltMs = lastBuiltMs,
         dev = deviceId,
+    )
+
+/** Lifeline DB row → sync wire shape. */
+internal fun com.mythara.lifeline.LifelineEntity.toExport(): MemorySync.LifelineExport =
+    MemorySync.LifelineExport(
+        dev = deviceId,
+        msi = mediaStoreId,
+        ts = takenMs,
+        mime = mimeType,
+        w = width,
+        h = height,
+        lat = lat,
+        lng = lng,
+        cap = captionText,
+        capModel = captionModel,
+        capAt = captionedAtMs,
+        name = displayName,
+        place = placeLabel,
+    )
+
+/**
+ * Wire shape → DB row. is_remote=true marks the row as cross-device so
+ * the UI knows the photo bytes are NOT on this device — render the
+ * caption + a "📷 from <device>" placeholder instead of trying to
+ * decode an unreachable mediaStoreId.
+ */
+internal fun MemorySync.LifelineExport.toRow(): com.mythara.lifeline.LifelineEntity =
+    com.mythara.lifeline.LifelineEntity(
+        deviceId = dev,
+        mediaStoreId = msi,
+        uri = "", // remote — no local URI
+        displayName = name.orEmpty(),
+        bucket = "",
+        takenMs = ts,
+        addedMs = ts,
+        mimeType = mime,
+        width = w,
+        height = h,
+        lat = lat,
+        lng = lng,
+        placeLabel = place,
+        captionStatus = if (cap.isNullOrBlank()) {
+            com.mythara.lifeline.LifelineCaptionStatus.PENDING.name
+        } else {
+            com.mythara.lifeline.LifelineCaptionStatus.CAPTIONED.name
+        },
+        captionText = cap,
+        captionModel = capModel,
+        captionedAtMs = capAt,
+        isRemote = true,
     )

@@ -7,6 +7,8 @@ import com.mythara.agent.AutoReplyDispatcher
 import com.mythara.agent.NotificationImageIngestor
 import com.mythara.agent.queue.PendingReplyKickScheduler
 import com.mythara.agent.queue.PendingReplyQueue
+import com.mythara.lifeline.LifelineScheduler
+import com.mythara.lifeline.MediaStoreObserver
 import com.mythara.analytics.ContactAnalyticsScheduler
 import com.mythara.agent.SelfOrganizerScheduler
 import com.mythara.growth.GrowthScheduler
@@ -48,6 +50,8 @@ class MytharaApp : Application(), Configuration.Provider {
     @Inject lateinit var contactAnalyticsScheduler: ContactAnalyticsScheduler
     @Inject lateinit var pendingReplyQueue: PendingReplyQueue
     @Inject lateinit var pendingReplyKickScheduler: PendingReplyKickScheduler
+    @Inject lateinit var lifelineScheduler: LifelineScheduler
+    @Inject lateinit var mediaStoreObserver: MediaStoreObserver
 
     // App-scoped supervisor for fire-and-forget process-level
     // coroutines (settings-flow observers etc.). Cancelled implicitly
@@ -94,6 +98,13 @@ class MytharaApp : Application(), Configuration.Provider {
         // LLM cost is only paid when a contact's sample grew or 24h
         // has passed since their last inference.
         contactAnalyticsScheduler.start()
+        // Life timeline — scan MediaStore for new camera photos and
+        // caption them via Gemini. The observer fires live on every
+        // new photo; the periodic worker is the nightly catch-up so
+        // photos taken while the process was dead get captioned the
+        // next time we're charging on Wi-Fi.
+        lifelineScheduler.start()
+        mediaStoreObserver.start()
         // Reflect the user's persistent-talk-notification preference
         // on every cold start (and follow live toggles while the
         // process is alive). Observing the Flow rather than reading

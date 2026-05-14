@@ -528,6 +528,12 @@ private fun runtimePermissionList(): List<String> {
     } else {
         list += Manifest.permission.READ_EXTERNAL_STORAGE
     }
+    // Android 10+ — needed for MediaStore queries to return EXIF GPS
+    // on photos. Without it the lifeline timeline still works but
+    // captions lose place context.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        list += Manifest.permission.ACCESS_MEDIA_LOCATION
+    }
     return list
 }
 
@@ -552,6 +558,7 @@ private fun humaniseRuntimePermission(perm: String): String = when (perm) {
     Manifest.permission.READ_MEDIA_IMAGES -> "read photos (READ_MEDIA_IMAGES)"
     Manifest.permission.READ_EXTERNAL_STORAGE -> "read storage (legacy ≤ API 32)"
     Manifest.permission.POST_NOTIFICATIONS -> "post notifications"
+    Manifest.permission.ACCESS_MEDIA_LOCATION -> "photo EXIF location (for timeline place context)"
     else -> perm.substringAfterLast('.')
 }
 

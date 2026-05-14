@@ -48,6 +48,16 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!-- Media-location: needed for MediaStore queries to return the
+         original EXIF GPS coordinates instead of stripped versions.
+         The life-timeline feature uses lat/lng to ground photo
+         captions in real places ("at home", "Whole Foods Vancouver")
+         via the vision model. Runtime-granted alongside READ_MEDIA_
+         IMAGES on Android 10+. Off by default until the user opts in;
+         photos without GPS still get captioned, just without place
+         context. -->
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
+
     <!-- Usage stats — what apps the user has been in, for how long,
          when. Required by the persona-building pipeline that watches
          user behaviour and writes traits into Lumi's memory. Special

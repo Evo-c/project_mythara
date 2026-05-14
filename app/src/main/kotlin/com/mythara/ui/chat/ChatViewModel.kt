@@ -46,6 +46,7 @@ class ChatViewModel @Inject constructor(
     private val allowlist: com.mythara.data.AllowlistStore,
     @dagger.hilt.android.qualifiers.ApplicationContext private val appCtx: android.content.Context,
     private val deviceIdStore: com.mythara.memory.DeviceIdStore,
+    private val lifelineRepo: com.mythara.lifeline.LifelineRepository,
 ) : ViewModel() {
     /** Local device id, cached once on init. Used to identify
      *  foreign-device chat rows for the FromOtherDevice card render. */
@@ -67,7 +68,10 @@ class ChatViewModel @Inject constructor(
             cachedLocalDeviceId = runCatching { deviceIdStore.id() }.getOrNull()
             // Re-render after the id resolves so any rows already
             // observed during init get re-bucketed correctly.
-            rebuildItems(history.dao.listAll())
+            rebuildItems(
+                rows = history.dao.listAll(),
+                lifeline = runCatching { lifelineRepo.dao.listRecent(limit = 500) }.getOrDefault(emptyList()),
+            )
         }
         // "Hey Lumi <query>" → submit the query just like a typed
         // message, but flag it as voice-originated so the agent loop
@@ -276,6 +280,26 @@ class ChatViewModel @Inject constructor(
             val output: String? = null,
             val durationMs: Long? = null,
         ) : ChatItem
+        /**
+         * A camera photo from the user's life timeline, interleaved into
+         * the chat scrollback by timestamp. The image bytes live in the
+         * device's MediaStore (referenced by [uri] when [isLocal]).
+         * Cross-device entries arrive via memory-sync as is_local=false
+         * rows — UI shows a placeholder card with caption + device label
+         * since the bytes aren't reachable from here.
+         */
+        data class LifelinePhoto(
+            override val key: String,
+            val isLocal: Boolean,
+            val uri: String,
+            val captionText: String?,
+            val captionStatus: String,
+            val takenMs: Long,
+            val width: Int,
+            val height: Int,
+            val deviceShortId: String,
+            val placeLabel: String? = null,
+        ) : ChatItem
     }
 
     enum class ToolState { Running, Success, Failure }
@@ -302,9 +326,17 @@ class ChatViewModel @Inject constructor(
     private val inflightTools = mutableMapOf<String, ChatItem.Tool>()
 
     init {
-        // Observe persisted history; recompose ChatItems each time the table changes.
+        // Observe BOTH chat history AND the lifeline (photo timeline)
+        // tables, recomposing items whenever either changes. The two
+        // are merged + sorted by timestamp in rebuildItems so photos
+        // interleave naturally with chat turns — "home of the launcher
+        // = life's timeline" relies on this.
         viewModelScope.launch {
-            history.dao.observeAll().collect { rows -> rebuildItems(rows) }
+            kotlinx.coroutines.flow.combine(
+                history.dao.observeAll(),
+                lifelineRepo.dao.observeRecent(),
+            ) { rows, lifeline -> rows to lifeline }
+                .collect { (rows, lifeline) -> rebuildItems(rows, lifeline) }
         }
     }
 
@@ -416,8 +448,13 @@ class ChatViewModel @Inject constructor(
 
     fun setContinuousMode(value: Boolean) = _ui.update { it.copy(continuousMode = value) }
 
-    private fun rebuildItems(rows: List<MessageRow>) {
-        val items = mutableListOf<ChatItem>()
+    private fun rebuildItems(
+        rows: List<MessageRow>,
+        lifeline: List<com.mythara.lifeline.LifelineEntity> = emptyList(),
+    ) {
+        // Build chat items into a tagged list (ts → item) so we can
+        // interleave lifeline photo cards by timestamp at the end.
+        val tagged = mutableListOf<Pair<Long, ChatItem>>()
         val localDev = cachedLocalDeviceId
         for (row in rows) {
             // Foreign-device rows (origin device id differs from this
@@ -428,8 +465,8 @@ class ChatViewModel @Inject constructor(
             val rowDev = row.deviceId?.takeIf { it.isNotBlank() }
             if (rowDev != null && localDev != null && rowDev != localDev) {
                 if (row.role == "user" || row.role == "assistant") {
-                    items.add(
-                        ChatItem.FromOtherDevice(
+                    tagged.add(
+                        row.tsMillis to ChatItem.FromOtherDevice(
                             key = "x:${row.id}",
                             role = row.role,
                             text = row.content.orEmpty(),
@@ -444,7 +481,7 @@ class ChatViewModel @Inject constructor(
                 if (row.role == "tool") continue
             }
             when (row.role) {
-                "user" -> items.add(ChatItem.UserText(key = "u:${row.id}", text = row.content.orEmpty()))
+                "user" -> tagged.add(row.tsMillis to ChatItem.UserText(key = "u:${row.id}", text = row.content.orEmpty()))
                 "assistant" -> {
                     if (!row.content.isNullOrEmpty()) {
                         // Hide NOSURFACE replies entirely — they're the
@@ -483,12 +520,12 @@ class ChatViewModel @Inject constructor(
                                             input = seg.content,
                                             keepAudioTags = true,
                                         ).ifBlank { seg.content }
-                                        items.add(
-                                            ChatItem.AssistantText(key = "a:${row.id}:$idx", text = display),
+                                        tagged.add(
+                                            row.tsMillis to ChatItem.AssistantText(key = "a:${row.id}:$idx", text = display),
                                         )
                                     }
-                                    is Thinks.Segment.Thought -> items.add(
-                                        ChatItem.Thought(
+                                    is Thinks.Segment.Thought -> tagged.add(
+                                        row.tsMillis to ChatItem.Thought(
                                             key = "t:${row.id}:$idx",
                                             text = seg.content,
                                             streaming = !seg.closed,
@@ -506,8 +543,8 @@ class ChatViewModel @Inject constructor(
                         row.content.startsWith("fetch failed") ||
                         row.content.startsWith("unknown tool") ||
                         row.content.startsWith("http ")
-                    items.add(
-                        ChatItem.Tool(
+                    tagged.add(
+                        row.tsMillis to ChatItem.Tool(
                             key = "tool:$callId",
                             name = toolName,
                             args = "",
@@ -518,6 +555,28 @@ class ChatViewModel @Inject constructor(
                 }
             }
         }
+        // Splice lifeline photos into the timeline. Each row is tagged
+        // with takenMs and merged with chat items so the surface reads
+        // as one chronological feed — "what I did + what I shot."
+        for (photo in lifeline) {
+            tagged.add(
+                photo.takenMs to ChatItem.LifelinePhoto(
+                    key = "lf:${photo.deviceId}:${photo.mediaStoreId}",
+                    isLocal = !photo.isRemote && photo.uri.isNotBlank(),
+                    uri = photo.uri,
+                    captionText = photo.captionText,
+                    captionStatus = photo.captionStatus,
+                    takenMs = photo.takenMs,
+                    width = photo.width,
+                    height = photo.height,
+                    deviceShortId = photo.deviceId.takeLast(8),
+                    placeLabel = photo.placeLabel,
+                ),
+            )
+        }
+        // Stable sort by timestamp; same-ts items keep insertion order
+        // so a tool's stdout still follows its own start row.
+        val items = tagged.sortedBy { it.first }.map { it.second }.toMutableList()
         items.addAll(inflightTools.values)
         _ui.update { it.copy(items = items) }
     }

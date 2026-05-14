@@ -482,6 +482,7 @@ private fun Transcript(
                 is ChatViewModel.ChatItem.Thought -> ThoughtBubble(item)
                 is ChatViewModel.ChatItem.Tool -> ToolCallBubble(item)
                 is ChatViewModel.ChatItem.FromOtherDevice -> FromOtherDeviceCard(item)
+                is ChatViewModel.ChatItem.LifelinePhoto -> LifelineCard(item)
             }
         }
         if (streamingActive) {
