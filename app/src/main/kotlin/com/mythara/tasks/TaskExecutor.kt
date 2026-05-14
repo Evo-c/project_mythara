@@ -2,9 +2,11 @@ package com.mythara.tasks
 
 import android.util.Log
 import com.mythara.agent.AgentRunner
+import com.mythara.agent.Thinks
 import com.mythara.memory.DeviceIdStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import android.content.Context
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -69,37 +71,50 @@ class TaskExecutor @Inject constructor(
                 continue
             }
             Log.d(TAG, "tick: claimed task ${task.id} '${task.title.take(40)}'")
-            runOne(task.copy(claimedByDeviceId = myId, claimedMs = now))
+            runOne(task.copy(claimedByDeviceId = myId, claimedMs = now), myId)
             done++
         }
         return done
     }
 
-    private suspend fun runOne(task: TaskEntity) {
+    private suspend fun runOne(task: TaskEntity, myId: String) {
         // Mark RUNNING so other devices viewing the task see the
         // state transition on their next sync (and don't think it's
         // stalled).
         runCatching { repo.dao.markRunning(task.id) }
 
-        // Phase 1: submit the task body to the agent as a normal turn.
-        // We DON'T await completion here — the agent's turn lifecycle
-        // is process-wide via AgentRunner. Instead we mark the task
-        // as DONE optimistically with a "submitted to agent" note;
-        // the agent's own audit log + chat history surface what
-        // actually happened.
+        // Phase 2: submit the task body to the agent and BLOCK on the
+        // turn so the agent's actual final answer lands in result_text
+        // — that's what the Tasks screen renders and what ships back to
+        // the requesting device on the next sync. `submitAndAwait`
+        // keeps the full AgentRunner lifecycle (FGS keepalive, TTS,
+        // reply notification); we just also get the text back.
         //
-        // Phase 2 can add a TaskExecutor-aware Turn collector that
-        // waits for Finished + records the agent's final text into
-        // result_text.
+        // withTimeoutOrNull bounds a single task so a wedged turn
+        // can't stall the heartbeat indefinitely — maxTasks in tick()
+        // caps the per-tick total. The agent turn itself runs in
+        // AgentRunner's own scope, so a timeout here only abandons our
+        // WAIT; the turn finishes on its own and still posts its reply.
         runCatching {
-            val prompt = buildPrompt(task)
-            runner.submit(text = prompt, fromVoice = false)
-            repo.dao.markTerminal(
-                task.id,
-                TaskStatus.DONE.name,
-                "submitted to agent",
-                System.currentTimeMillis(),
-            )
+            val prompt = buildPrompt(task, myId)
+            val finalText = withTimeoutOrNull(RESULT_TIMEOUT_MS) {
+                runner.submitAndAwait(text = prompt, fromVoice = false)
+            }
+            if (finalText == null) {
+                repo.dao.markTerminal(
+                    task.id,
+                    TaskStatus.FAILED.name,
+                    "agent produced no answer (timed out or errored)",
+                    System.currentTimeMillis(),
+                )
+            } else {
+                repo.dao.markTerminal(
+                    task.id,
+                    TaskStatus.DONE.name,
+                    summariseResult(finalText),
+                    System.currentTimeMillis(),
+                )
+            }
         }.onFailure { e ->
             Log.w(TAG, "task ${task.id} threw: ${e.message}")
             repo.dao.markTerminal(
@@ -111,16 +126,57 @@ class TaskExecutor @Inject constructor(
         }
     }
 
-    private fun buildPrompt(task: TaskEntity): String = buildString {
-        append("[handoff-task] ")
-        append("requester=").append(task.requesterDeviceId.takeLast(8)).append(' ')
-        append("target=").append(task.targetDeviceId?.takeLast(8) ?: "any").append(' ')
-        append("id=").append(task.id.take(8)).append('\n')
+    /**
+     * Tidy the agent's raw final text for the task card + the synced
+     * JSONL row: drop `<think>` reasoning and the max-iteration
+     * sentinel, trim, and cap the length so a rambling answer doesn't
+     * bloat either the UI row or the cross-device payload.
+     */
+    private fun summariseResult(raw: String): String {
+        val cleaned = Thinks.strip(raw)
+            .removeSuffix(" [hit max iterations]")
+            .trim()
+        if (cleaned.isBlank()) return "(agent produced no text)"
+        return if (cleaned.length > RESULT_MAX_CHARS) {
+            cleaned.take(RESULT_MAX_CHARS).trimEnd() + "…"
+        } else {
+            cleaned
+        }
+    }
+
+    /**
+     * Build the turn text submitted to the agent for a claimed task.
+     *
+     * The phrasing is deliberately assertive: an earlier, more neutral
+     * format ("target=<id>") made the model reason "this targets the
+     * Pixel Fold — not me" and try to re-route the task instead of
+     * doing it, because it didn't connect "I am running ON device
+     * <id>". So we state it plainly: THIS device is the one that must
+     * act, do it now, reply with the result — don't hand it off.
+     */
+    private fun buildPrompt(task: TaskEntity, myId: String): String = buildString {
+        append("[handoff-task] This task has been routed to THIS device and ")
+        append("YOU are the device that must carry it out — you are running on ")
+        append("device `").append(myId).append("`. ")
+        append("Do it NOW using your tools and reply with the actual result. ")
+        append("Do NOT create another task, hand it off, or say it'll be done later — ")
+        append("there is no other device to defer to, you ARE the target.\n")
+        append("requester=").append(task.requesterDeviceId.takeLast(8))
+        append(" id=").append(task.id.take(8)).append('\n')
         append("title: ").append(task.title).append('\n')
         if (task.body.isNotBlank()) append(task.body)
     }
 
     companion object {
         private const val TAG = "Mythara/TaskExec"
+
+        /** Per-task wait cap. A single agent turn finishing in over two
+         *  minutes is pathological; past this we abandon the wait, mark
+         *  the task FAILED, and move on so the heartbeat isn't wedged. */
+        private const val RESULT_TIMEOUT_MS = 2L * 60 * 1000
+
+        /** Max chars of agent text kept in `result_text` — keeps the
+         *  Tasks card readable and the synced task ledger small. */
+        private const val RESULT_MAX_CHARS = 800
     }
 }

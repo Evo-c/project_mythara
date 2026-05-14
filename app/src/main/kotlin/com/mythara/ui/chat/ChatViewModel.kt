@@ -598,7 +598,13 @@ class ChatViewModel @Inject constructor(
                         row.content.startsWith("http ")
                     tagged.add(
                         row.tsMillis to ChatItem.Tool(
-                            key = "tool:$callId",
+                            // Key on the row's own primary id, not the
+                            // tool call id: callIds are only unique within
+                            // a single turn, and a cross-device history
+                            // merge can legitimately bring in two rows
+                            // sharing one — keying on callId then crashes
+                            // the LazyColumn with a duplicate-key error.
+                            key = "tool:${row.id}:$callId",
                             name = toolName,
                             args = "",
                             state = if (isFailure) ToolState.Failure else ToolState.Success,

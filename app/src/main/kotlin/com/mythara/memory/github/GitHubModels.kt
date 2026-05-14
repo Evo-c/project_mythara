@@ -72,6 +72,14 @@ data class PutContentResponse(
 )
 
 @Serializable
+data class DeleteContentRequest(
+    val message: String,
+    /** Required — the blob sha of the file being removed. */
+    val sha: String,
+    val branch: String? = null,
+)
+
+@Serializable
 data class CommitInfo(
     val sha: String,
     val message: String? = null,

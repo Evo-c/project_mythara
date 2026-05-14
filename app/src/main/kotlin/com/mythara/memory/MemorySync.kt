@@ -426,28 +426,76 @@ class MemorySync @Inject constructor(
             }
         }
 
-        // ---- tasks/<YYYY-MM>.jsonl — cross-device task queue. Each
-        //      row's state lives canonically on whichever device most
-        //      recently changed it; the (id, claimedBy, status,
-        //      completedMs) tuple lets restores reconcile races.
+        // ---- tasks/<deviceId>/<YYYY-MM>.jsonl — cross-device task
+        //      queue, per-device-file layout. THIS device writes only
+        //      its own `tasks/<deviceId>/` subtree (every row it
+        //      created or claimed), so there is exactly one writer per
+        //      file — concurrent task writes from different devices can
+        //      never collide, and the old shared-file 409→corruption
+        //      failure mode is structurally impossible. Readers union
+        //      every device's files and reconcile per task id.
         if (cfg.syncLearnings) {
-            val unsyncedTasks = runCatching { taskRepo.dao.listUnsynced() }.getOrDefault(emptyList())
-            if (unsyncedTasks.isNotEmpty()) {
+            // Publish the FULL set of rows this device owns EVERY sync —
+            // not just unsynced ones. The per-device file must be a
+            // complete view (a partial write would shrink it and drop
+            // rows), and publishing unconditionally is what re-seeds the
+            // new layout after a migration / fresh repo. putWithCache's
+            // content-hash cache makes a no-change sync a cheap no-op
+            // (the file lands in `skipped`, no network write).
+            val owned = runCatching { taskRepo.dao.listOwnedBy(deviceId) }.getOrDefault(emptyList())
+            if (owned.isNotEmpty()) {
                 val byMonth: Map<String, List<com.mythara.tasks.TaskEntity>> =
-                    unsyncedTasks.groupBy { isoYearMonth(it.createdMs) }
+                    owned.groupBy { isoYearMonth(it.createdMs) }
+                // Only mark a row synced once its file ACTUALLY landed
+                // (path in `written` = pushed, or `skipped` = already
+                // current remote). Anything else means the PUT failed
+                // and the rows stay unsynced for the next heartbeat.
+                val syncedIds = mutableListOf<String>()
                 for ((month, rows) in byMonth) {
                     val body = rows.joinToString("\n") { row ->
                         json.encodeToString(TaskExport.serializer(), row.toExport())
                     }
-                    val path = "tasks/$month.jsonl"
+                    val path = "tasks/$deviceId/$month.jsonl"
                     putWithCache(
                         client, cfg, path, body, manifest,
-                        "mythara: tasks/$month (+${rows.size})", written, skipped,
+                        "mythara: tasks/$deviceId/$month (${rows.size})", written, skipped,
                     )
+                    if (path in written || path in skipped) {
+                        syncedIds.addAll(rows.map { it.id })
+                    } else {
+                        Log.w(tag, "tasks/$deviceId/$month push did not land — leaving rows unsynced for retry")
+                    }
                 }
-                val syncedNow = System.currentTimeMillis()
-                taskRepo.dao.markSynced(unsyncedTasks.map { it.id }, syncedNow)
+                if (syncedIds.isNotEmpty()) {
+                    taskRepo.dao.markSynced(syncedIds, System.currentTimeMillis())
+                }
             }
+
+            // One-time legacy cleanup: the old layout wrote a single
+            // shared `tasks/<YYYY-MM>.jsonl`. Those rows have already
+            // been pulled into every device's DB and re-published under
+            // the per-device layout above, so the flat file is now
+            // redundant — delete it. Whichever device syncs first does
+            // this; the others find it already gone (deleteFile treats
+            // a missing file as success).
+            runCatching {
+                val listing = client.listDirectory(cfg.owner, cfg.repo, "tasks")
+                if (listing is Outcome.Ok) {
+                    for (entry in listing.value) {
+                        if (entry.type == "file" && entry.name.endsWith(".jsonl")) {
+                            val legacyPath = "tasks/${entry.name}"
+                            val del = client.deleteFile(
+                                cfg.owner, cfg.repo, legacyPath,
+                                "mythara: drop legacy task ledger $legacyPath", cfg.branch,
+                            )
+                            if (del is Outcome.Ok) {
+                                manifest.files.remove(legacyPath)
+                                Log.d(tag, "removed legacy task ledger $legacyPath")
+                            }
+                        }
+                    }
+                }
+            }.onFailure { Log.w(tag, "legacy task cleanup failed: ${it.message}") }
         }
 
         // ---- device-to-device messaging (location requests etc.)
@@ -466,6 +514,16 @@ class MemorySync @Inject constructor(
             }
         }
 
+        // ---- PULL leg — every push leg above has a matching pull here
+        //      so the 5-minute heartbeat is bidirectional. Without this
+        //      a device's learnings / vault / chat / analytics / tasks
+        //      only flowed OUT; peer devices' state never flowed back
+        //      until a manual full restore. All pulls here use MERGE
+        //      semantics (union / upsert / reconcile) — never the
+        //      REPLACE semantics runRestore uses for cold bootstrap.
+        runCatching { pullSharedState(client, cfg) }
+            .onFailure { Log.w(tag, "shared-state pull failed: ${it.message}") }
+
         // ---- manifest.json (always last; lastSyncTs always changes)
         manifest.lastSyncTsMillis = now
         manifest.version = ManifestV2.CURRENT_VERSION
@@ -482,6 +540,281 @@ class MemorySync @Inject constructor(
             filesWritten = written,
             skipped = skipped,
         )
+    }
+
+    /**
+     * The PULL counterpart to [runSync]'s push legs. Fetches every
+     * cross-device subsystem the heartbeat also pushes and reconciles
+     * it into the local stores using **MERGE** semantics:
+     *
+     *  - learnings journal (`working/`)   — union by (ts, kind, note)
+     *  - vault tiers (`vault/working/`,
+     *    `semantic/`, `episodic/`)        — sha-deduped add (idempotent)
+     *  - analytics/contact_profiles       — newest `lastBuiltMs` wins
+     *  - analytics/favorites              — additive upsert
+     *  - analytics/audit_log              — union, dedup by composite key
+     *  - analytics/user_aliases           — atomic upsertAll merge
+     *  - lifeline/<month>                 — upsert peer rows, skip own
+     *  - tasks/<month>                    — reconcile (terminal-ts wins)
+     *
+     * This deliberately never uses the REPLACE semantics of
+     * [runRestore] (journal.replaceAll-from-scratch, history.clear) —
+     * a heartbeat must never clobber un-pushed local state.
+     *
+     * Two subsystems are intentionally NOT pulled here:
+     *  - Settings: `SettingsExport` carries no version/timestamp, so an
+     *    auto-pull would ping-pong region/model between devices.
+     *  - Conversations: chat rows feed the agent loop's context window;
+     *    continuously merging peers' chat would flood (and eventually
+     *    400) every device's agent. Both stay restore-only.
+     *
+     * Each subsystem is independently `runCatching`-guarded so one
+     * malformed file can't abort the rest of the pull.
+     */
+    private suspend fun pullSharedState(client: GitHubClient, cfg: MemorySettings.Snapshot) {
+        if (!cfg.syncLearnings) return
+        val myId = runCatching { deviceIdStore.id() }.getOrNull()
+
+        // ---- working/<day>.jsonl → LearningJournal (union merge)
+        if (cfg.syncLearnings) runCatching {
+            val remoteEntries = mutableListOf<LearningJournal.Entry>()
+            listJsonl(client, cfg, Tier.Working.dir).forEach { name ->
+                readJsonlLines(client, cfg, "${Tier.Working.dir}/$name", MemoryRecord.serializer())
+                    .forEach { rec ->
+                        remoteEntries.add(
+                            LearningJournal.Entry(
+                                tsMillis = rec.t,
+                                kind = rec.src.removePrefix("growth:"),
+                                note = rec.content,
+                            ),
+                        )
+                    }
+            }
+            if (remoteEntries.isNotEmpty()) {
+                val keyOf: (LearningJournal.Entry) -> String = { "${it.tsMillis}|${it.kind}|${it.note.hashCode()}" }
+                val localEntries = journal.read()
+                val merged = LinkedHashMap<String, LearningJournal.Entry>()
+                remoteEntries.forEach { merged[keyOf(it)] = it }
+                localEntries.forEach { merged[keyOf(it)] = it } // local wins ties
+                val added = merged.size - localEntries.size
+                if (added > 0) {
+                    journal.replaceAll(merged.values.toList())
+                    Log.d(tag, "journal PULL: +$added entry/ies")
+                }
+            }
+        }.onFailure { Log.w(tag, "journal pull failed: ${it.message}") }
+
+        // ---- vault tiers → LearningVault (sha-deduped, idempotent)
+        if (cfg.syncLearnings) {
+            pullVaultDir(client, cfg, "vault/${Tier.Working.dir}", Tier.Working)
+            pullVaultDir(client, cfg, Tier.Semantic.dir, Tier.Semantic)
+            pullVaultDir(client, cfg, Tier.Episodic.dir, Tier.Episodic)
+        }
+
+        // NOTE: conversations/<day>.jsonl is intentionally NOT pulled
+        // on the heartbeat. Chat rows land in the SAME `history` table
+        // the agent loop reads as its context window — continuously
+        // merging peers' chat would flood every device's agent context
+        // (and 400s MiniMax once the row count gets large). Conversations
+        // stay push-only on the heartbeat; the full cross-device chat is
+        // materialised only by an explicit [runRestore] (cold bootstrap).
+
+        // ---- analytics/contact_profiles.jsonl (newest lastBuiltMs wins)
+        runCatching {
+            readJsonlLines(client, cfg, "analytics/contact_profiles.jsonl", ContactProfileExport.serializer())
+                .forEach { exp ->
+                    val existing = contactProfiles.dao.byKey(exp.nameKey)
+                    if (existing == null || existing.lastBuiltMs < exp.lastBuiltMs) {
+                        contactProfiles.dao.upsert(exp.toRow())
+                    }
+                }
+        }.onFailure { Log.w(tag, "contact-profiles pull failed: ${it.message}") }
+
+        // ---- analytics/favorites.json (additive upsert)
+        runCatching {
+            val r = client.readFile(cfg.owner, cfg.repo, "analytics/favorites.json")
+            if (r is Outcome.Ok) {
+                val incoming = runCatching {
+                    manifestJson.decodeFromString(
+                        kotlinx.serialization.builtins.ListSerializer(FavoriteExport.serializer()),
+                        r.value.text,
+                    )
+                }.getOrNull().orEmpty()
+                for (f in incoming) {
+                    favorites.upsert(
+                        com.mythara.data.FavoritesStore.Favorite(
+                            name = f.name,
+                            phone = f.phone,
+                            apps = f.apps.ifEmpty { listOf(com.mythara.data.FavoritesStore.WHATSAPP_PACKAGE) },
+                            enabled = f.enabled,
+                            toneLabel = f.tone,
+                        ),
+                    )
+                }
+            }
+        }.onFailure { Log.w(tag, "favorites pull failed: ${it.message}") }
+
+        // ---- analytics/audit_log.jsonl (union, dedup by composite key)
+        runCatching {
+            val incoming = readJsonlLines(client, cfg, "analytics/audit_log.jsonl", AuditExport.serializer())
+            if (incoming.isNotEmpty()) {
+                val existing = runCatching { auditRepo.dao.listRecent(limit = 50_000) }
+                    .getOrDefault(emptyList())
+                val seenKeys = existing.mapTo(HashSet()) {
+                    "${it.tsMillis}|${it.toolName ?: ""}|${it.deviceId ?: ""}|${it.argsPreview ?: ""}"
+                }
+                for (exp in incoming) {
+                    val key = "${exp.tsMillis}|${exp.toolName ?: ""}|${exp.deviceId ?: ""}|${exp.argsPreview ?: ""}"
+                    if (seenKeys.add(key)) runCatching { auditRepo.dao.insert(exp.toRow()) }
+                }
+            }
+        }.onFailure { Log.w(tag, "audit-log pull failed: ${it.message}") }
+
+        // ---- analytics/user_aliases.json (atomic upsertAll merge)
+        runCatching {
+            val r = client.readFile(cfg.owner, cfg.repo, "analytics/user_aliases.json")
+            if (r is Outcome.Ok) {
+                val incoming = runCatching {
+                    manifestJson.decodeFromString(
+                        kotlinx.serialization.builtins.ListSerializer(UserAliasExport.serializer()),
+                        r.value.text,
+                    )
+                }.getOrNull().orEmpty()
+                if (incoming.isNotEmpty()) {
+                    userAliases.upsertAll(
+                        incoming.map { com.mythara.data.UserAliasesStore.Alias(name = it.name, phone = it.phone) },
+                    )
+                }
+            }
+        }.onFailure { Log.w(tag, "user-aliases pull failed: ${it.message}") }
+
+        // ---- lifeline/<YYYY-MM>.jsonl (upsert peer rows, skip own device)
+        runCatching {
+            listJsonl(client, cfg, "lifeline").forEach { name ->
+                readJsonlLines(client, cfg, "lifeline/$name", LifelineExport.serializer())
+                    .forEach { exp ->
+                        if (exp.dev == myId) return@forEach
+                        val existing = runCatching {
+                            lifelineRepo.dao.byLocalRef(exp.dev, exp.msi)
+                        }.getOrNull()
+                        if (existing != null) {
+                            runCatching { lifelineRepo.dao.upsert(exp.toRow().copy(id = existing.id)) }
+                        } else {
+                            runCatching { lifelineRepo.dao.insertIfAbsent(exp.toRow()) }
+                        }
+                    }
+            }
+        }.onFailure { Log.w(tag, "lifeline pull failed: ${it.message}") }
+
+        // ---- tasks — union every device's `tasks/<deviceId>/*.jsonl`
+        //      (plus any leftover legacy flat `tasks/*.jsonl`) and
+        //      reconcile per task id: terminal-state / latest-stamp
+        //      wins (see [taskRemoteIsNewer]). A single id can appear
+        //      in several files (creator's + claimer's) — the reconcile
+        //      is order-independent and converges to the newest state.
+        runCatching {
+            var reconciled = 0
+            for (path in listTaskFiles(client, cfg)) {
+                readJsonlLines(client, cfg, path, TaskExport.serializer()).forEach { exp ->
+                    val existing = runCatching { taskRepo.dao.byId(exp.id) }.getOrNull()
+                    if (existing == null) {
+                        runCatching {
+                            taskRepo.dao.insertIfAbsent(exp.toRow().copy(syncedAtMs = System.currentTimeMillis()))
+                        }.onSuccess { reconciled++ }
+                    } else if (taskRemoteIsNewer(existing, exp)) {
+                        runCatching {
+                            taskRepo.dao.upsert(exp.toRow().copy(syncedAtMs = System.currentTimeMillis()))
+                        }.onSuccess { reconciled++ }
+                    }
+                }
+            }
+            if (reconciled > 0) Log.d(tag, "tasks PULL: reconciled $reconciled remote row(s)")
+        }.onFailure { Log.w(tag, "tasks pull failed: ${it.message}") }
+    }
+
+    /**
+     * Enumerate every task-ledger file in the repo as full paths:
+     * per-device `tasks/<deviceId>/<month>.jsonl` files, plus any
+     * leftover legacy flat `tasks/<month>.jsonl` (kept readable so a
+     * mid-migration repo never loses task state). Empty on any failure.
+     */
+    private suspend fun listTaskFiles(client: GitHubClient, cfg: MemorySettings.Snapshot): List<String> {
+        val out = mutableListOf<String>()
+        val top = runCatching { client.listDirectory(cfg.owner, cfg.repo, "tasks") }.getOrNull()
+        if (top !is Outcome.Ok) return out
+        for (entry in top.value) {
+            when {
+                entry.type == "file" && entry.name.endsWith(".jsonl") ->
+                    out.add("tasks/${entry.name}")
+                entry.type == "dir" ->
+                    listJsonl(client, cfg, "tasks/${entry.name}").forEach { fname ->
+                        out.add("tasks/${entry.name}/$fname")
+                    }
+            }
+        }
+        return out
+    }
+
+    /** List the `.jsonl` file names under `<dir>` in the repo; empty on any failure. */
+    private suspend fun listJsonl(client: GitHubClient, cfg: MemorySettings.Snapshot, dir: String): List<String> {
+        val listing = runCatching { client.listDirectory(cfg.owner, cfg.repo, dir) }.getOrNull()
+        return if (listing is Outcome.Ok) {
+            listing.value.filter { it.type == "file" && it.name.endsWith(".jsonl") }.map { it.name }
+        } else {
+            emptyList()
+        }
+    }
+
+    /** Read + decode every line of a repo JSONL file; bad lines are dropped. */
+    private suspend fun <T> readJsonlLines(
+        client: GitHubClient,
+        cfg: MemorySettings.Snapshot,
+        path: String,
+        serializer: kotlinx.serialization.KSerializer<T>,
+    ): List<T> {
+        val r = runCatching { client.readFile(cfg.owner, cfg.repo, path) }.getOrNull()
+        if (r !is Outcome.Ok) return emptyList()
+        return r.value.text.lineSequence()
+            .filter { it.isNotBlank() }
+            .mapNotNull { runCatching { json.decodeFromString(serializer, it) }.getOrNull() }
+            .toList()
+    }
+
+    /**
+     * Directory-listing variant of [restoreVaultTier] for the heartbeat
+     * pull. Unlike the restore path it doesn't depend on the local
+     * manifest listing the file (a peer device's brand-new topic file
+     * won't be in our manifest yet), so it lists the repo dir live.
+     * [LearningVault.add] is sha-deduped, so re-pulling is idempotent.
+     */
+    private suspend fun pullVaultDir(
+        client: GitHubClient,
+        cfg: MemorySettings.Snapshot,
+        dir: String,
+        targetTier: Tier,
+    ) {
+        runCatching {
+            var added = 0
+            listJsonl(client, cfg, dir).forEach { name ->
+                readJsonlLines(client, cfg, "$dir/$name", MemoryRecord.serializer()).forEach { record ->
+                    runCatching {
+                        val inserted = vault.add(
+                            content = record.content,
+                            tier = targetTier,
+                            src = record.src,
+                            facets = record.facets,
+                            embedding = null,
+                            embModel = null,
+                            conf = record.conf,
+                            ref = record.ref,
+                            now = record.t,
+                        )
+                        if (inserted) added++
+                    }
+                }
+            }
+            if (added > 0) Log.d(tag, "vault PULL [$dir]: +$added record(s)")
+        }.onFailure { Log.w(tag, "vault pull [$dir] failed: ${it.message}") }
     }
 
     /** Pull from repo + materialise into local stores. REPLACE semantics. */
@@ -752,36 +1085,24 @@ class MemorySync @Inject constructor(
             }
         }
 
-        // tasks/<YYYY-MM>.jsonl — pull every month's task ledger and
+        // tasks — union every device's `tasks/<deviceId>/<month>.jsonl`
+        // (plus any leftover legacy flat `tasks/<month>.jsonl`) and
         // reconcile with local state. Conflict policy: the row with
         // the latest *terminal* timestamp wins, else the latest claim,
-        // else the latest createdMs. Local edits that happened since
-        // the last sync win over older remote state.
+        // else the latest createdMs. A task id can appear in several
+        // files (creator's + claimer's) — the reconcile converges.
         runCatching {
-            client.listDirectory(cfg.owner, cfg.repo, "tasks")
-        }.getOrNull()?.let { listing ->
-            if (listing is Outcome.Ok) {
-                for (file in listing.value.filter { it.type == "file" && it.name.endsWith(".jsonl") }) {
-                    val read = runCatching {
-                        client.readFile(cfg.owner, cfg.repo, "tasks/${file.name}")
-                    }.getOrNull()
-                    if (read !is Outcome.Ok) continue
-                    val incoming = read.value.text.lineSequence()
-                        .filter { it.isNotBlank() }
-                        .mapNotNull {
-                            runCatching { json.decodeFromString(TaskExport.serializer(), it) }.getOrNull()
-                        }
-                        .toList()
-                    for (exp in incoming) {
-                        val existing = runCatching { taskRepo.dao.byId(exp.id) }.getOrNull()
-                        if (existing == null) {
-                            runCatching { taskRepo.dao.insertIfAbsent(exp.toRow().copy(syncedAtMs = System.currentTimeMillis())) }
-                        } else if (taskRemoteIsNewer(existing, exp)) {
-                            runCatching { taskRepo.dao.upsert(exp.toRow().copy(syncedAtMs = System.currentTimeMillis())) }
-                        }
+            for (path in listTaskFiles(client, cfg)) {
+                val incoming = readJsonlLines(client, cfg, path, TaskExport.serializer())
+                for (exp in incoming) {
+                    val existing = runCatching { taskRepo.dao.byId(exp.id) }.getOrNull()
+                    if (existing == null) {
+                        runCatching { taskRepo.dao.insertIfAbsent(exp.toRow().copy(syncedAtMs = System.currentTimeMillis())) }
+                    } else if (taskRemoteIsNewer(existing, exp)) {
+                        runCatching { taskRepo.dao.upsert(exp.toRow().copy(syncedAtMs = System.currentTimeMillis())) }
                     }
-                    if (incoming.isNotEmpty()) filesRead.add("tasks/${file.name}")
                 }
+                if (incoming.isNotEmpty()) filesRead.add(path)
             }
         }
 
@@ -890,20 +1211,102 @@ class MemorySync @Inject constructor(
     /**
      * Pick a remote/local merge strategy by file path:
      *
-     *  - JSONL records (`working/`, `semantic/`, `conversations/`):
-     *    line-union, deduping by [MemoryRecord.id] or by the
-     *    `(t, role, content)` tuple for chat rows. Sorted by `t` so
-     *    the file stays append-ordered.
+     *  - tasks JSONL: dedup by [TaskExport.id], terminal-state and
+     *    later-stamp wins (same policy as [taskRemoteIsNewer]).
+     *  - lifeline JSONL: dedup by `(dev, msi)`, later effective
+     *    timestamp (delete/caption/taken) wins.
+     *  - conversations JSONL: dedup by the `(t, role, content)` tuple.
+     *  - other JSONL records (working, semantic, episodic, vault):
+     *    dedup by [MemoryRecord.id], reinforced-copy wins.
      *  - `manifest.json`: per-path entry newest-wins, union of
      *    [ManifestV2.files], `lastSyncTsMillis = max(remote, local)`.
-     *  - Everything else (README, MEMORY.md, settings, .gitkeep,
+     *  - everything else (README, MEMORY.md, settings, .gitkeep,
      *    placeholders): single-author, last-writer-wins — return local.
+     *
+     * Routing by schema matters: every JSONL file used to fall through
+     * to [mergeRecordJsonl], which parses lines as [MemoryRecord]. Task
+     * and lifeline rows are a different wire shape — that merger
+     * silently dropped every line it couldn't parse, so a 409
+     * write-race on a task ledger corrupted the file and lost tasks.
      */
     private fun mergerFor(path: String, manifest: ManifestV2): (String, String) -> String = when {
         path == "manifest.json" -> ::mergeManifests
+        path.startsWith("tasks/") && path.endsWith(".jsonl") -> ::mergeTaskJsonl
+        path.startsWith("lifeline/") && path.endsWith(".jsonl") -> ::mergeLifelineJsonl
         path.startsWith("conversations/") && path.endsWith(".jsonl") -> ::mergeChatJsonl
         path.endsWith(".jsonl") -> ::mergeRecordJsonl
         else -> { _, local -> local }
+    }
+
+    /**
+     * Merge two `tasks/<month>.jsonl` blobs. Dedup by [TaskExport.id];
+     * on collision the winner is decided by the same rule the read-side
+     * reconcile uses — a terminal state (DONE/FAILED/CANCELED) beats a
+     * non-terminal one, otherwise the later `completedMs ?: claimedMs ?:
+     * createdMs` wins. Lines that don't parse as [TaskExport] are kept
+     * verbatim rather than dropped, so a malformed line can never lose
+     * real data.
+     */
+    private fun mergeTaskJsonl(remote: String, local: String): String {
+        val terminals = setOf(
+            com.mythara.tasks.TaskStatus.DONE.name,
+            com.mythara.tasks.TaskStatus.FAILED.name,
+            com.mythara.tasks.TaskStatus.CANCELED.name,
+        )
+        fun stamp(t: TaskExport) = t.completedMs ?: t.claimedMs ?: t.createdMs
+        // true if `b` should win over `a`
+        fun bWins(a: TaskExport, b: TaskExport): Boolean {
+            val aTerm = a.st in terminals
+            val bTerm = b.st in terminals
+            if (aTerm != bTerm) return bTerm
+            return stamp(b) >= stamp(a)
+        }
+        val byId = linkedMapOf<String, TaskExport>()
+        val unparsed = mutableListOf<String>()
+        // remote first, then local — so a same-id local row gets the
+        // chance to win via bWins rather than being order-clobbered.
+        for (blob in listOf(remote, local)) {
+            blob.lineSequence().filter { it.isNotBlank() }.forEach { line ->
+                val t = runCatching { json.decodeFromString(TaskExport.serializer(), line) }.getOrNull()
+                if (t == null) {
+                    unparsed.add(line)
+                } else {
+                    val prev = byId[t.id]
+                    if (prev == null || bWins(prev, t)) byId[t.id] = t
+                }
+            }
+        }
+        val merged = byId.values.sortedBy { it.createdMs }
+            .map { json.encodeToString(TaskExport.serializer(), it) }
+        return (merged + unparsed.distinct()).joinToString("\n")
+    }
+
+    /**
+     * Merge two `lifeline/<month>.jsonl` blobs. Dedup by the
+     * `(dev, msi)` identity; on collision the row with the later
+     * effective timestamp wins — `delAt` (a tombstone) and `capAt`
+     * (a caption refresh) both count, so a delete or a re-caption on
+     * one device propagates. Unparseable lines are kept verbatim.
+     */
+    private fun mergeLifelineJsonl(remote: String, local: String): String {
+        fun stamp(e: LifelineExport) = maxOf(e.delAt ?: 0L, e.capAt ?: 0L, e.ts)
+        val byKey = linkedMapOf<String, LifelineExport>()
+        val unparsed = mutableListOf<String>()
+        for (blob in listOf(remote, local)) {
+            blob.lineSequence().filter { it.isNotBlank() }.forEach { line ->
+                val e = runCatching { json.decodeFromString(LifelineExport.serializer(), line) }.getOrNull()
+                if (e == null) {
+                    unparsed.add(line)
+                } else {
+                    val key = "${e.dev}:${e.msi}"
+                    val prev = byKey[key]
+                    if (prev == null || stamp(e) >= stamp(prev)) byKey[key] = e
+                }
+            }
+        }
+        val merged = byKey.values.sortedBy { it.ts }
+            .map { json.encodeToString(LifelineExport.serializer(), it) }
+        return (merged + unparsed.distinct()).joinToString("\n")
     }
 
     private fun mergeRecordJsonl(remote: String, local: String): String {

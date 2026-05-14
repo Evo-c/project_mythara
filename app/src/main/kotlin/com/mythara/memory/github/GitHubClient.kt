@@ -278,6 +278,36 @@ class GitHubClient(private val pat: String) {
         }
     }
 
+    /**
+     * Delete a file from the repo. Fetches the current blob sha first
+     * (the API requires it), then issues the DELETE. A missing file is
+     * treated as success — the desired end state (file absent) already
+     * holds. Used by the one-time legacy-task-ledger cleanup.
+     */
+    suspend fun deleteFile(
+        owner: String,
+        repo: String,
+        path: String,
+        commitMessage: String,
+        branch: String,
+    ): Outcome<Unit> {
+        val current = readFile(owner, repo, path)
+        if (current is Outcome.NotFound) return Outcome.Ok(Unit)
+        if (current !is Outcome.Ok) {
+            return Outcome.Error(-1, "delete $path: could not read current sha")
+        }
+        val resp = api.deleteContents(
+            owner, repo, path,
+            DeleteContentRequest(message = commitMessage, sha = current.value.sha, branch = branch),
+        )
+        return when {
+            resp.isSuccessful -> Outcome.Ok(Unit)
+            resp.code() == 401 -> Outcome.Unauthorized(readErr(resp) ?: "Auth failed.")
+            resp.code() == 404 -> Outcome.Ok(Unit) // already gone
+            else -> Outcome.Error(resp.code(), readErr(resp) ?: "DELETE failed (${resp.code()})")
+        }
+    }
+
     private fun readErr(r: Response<*>): String? {
         val body = r.errorBody()?.string()?.takeIf { it.isNotBlank() } ?: return null
         return runCatching { JSON.decodeFromString<ErrorBody>(body).message }.getOrNull() ?: body.take(200)

@@ -160,6 +160,22 @@ interface TaskDao {
     )
     suspend fun listUnsynced(): List<TaskEntity>
 
+    /**
+     * Every row this device is responsible for publishing to the repo —
+     * tasks it created (requester) or claimed/ran (claimer). In the
+     * per-device task-file layout each device writes ONLY its own
+     * `tasks/<deviceId>/...` subtree from this set, so there's a single
+     * writer per file and cross-device task writes never conflict.
+     */
+    @Query(
+        """
+        SELECT * FROM tasks
+        WHERE requester_device_id = :deviceId OR claimed_by_device_id = :deviceId
+        ORDER BY created_ms ASC
+        """,
+    )
+    suspend fun listOwnedBy(deviceId: String): List<TaskEntity>
+
     @Query("UPDATE tasks SET synced_at_ms = :nowMs WHERE id IN (:ids)")
     suspend fun markSynced(ids: List<String>, nowMs: Long)
 

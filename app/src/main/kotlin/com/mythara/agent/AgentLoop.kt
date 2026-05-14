@@ -468,7 +468,13 @@ class AgentLoop @Inject constructor(
         loop@ while (iter < MAX_ITERATIONS) {
             iter++
 
-            val rawHistory: List<ChatMessage> = history.dao.listAll().map { row ->
+            // Cap the history we replay to the model. listAll() is
+            // unbounded — a large table (heavy use, or a cross-device
+            // memory restore importing peers' chat) would balloon the
+            // request until MiniMax 400s. listRecent keeps the freshest
+            // window; sanitizeHistory below repairs any tool-call pair
+            // the cut happened to bisect.
+            val rawHistory: List<ChatMessage> = history.dao.listRecent(MAX_HISTORY_MESSAGES).map { row ->
                 ChatMessage(
                     role = row.role,
                     content = row.content,
@@ -1152,6 +1158,16 @@ class AgentLoop @Inject constructor(
          * broken model from spinning forever on a malformed function call.
          */
         const val MAX_ITERATIONS = 8
+
+        /**
+         * Max persisted chat rows replayed to the model per request.
+         * The `messages` table is unbounded and grows forever (every
+         * turn + every tool call is a row); past a few hundred the
+         * request body 400s MiniMax. 200 is a generous recency window
+         * — roughly the last ~10 multi-step turns — while keeping the
+         * payload well inside limits.
+         */
+        const val MAX_HISTORY_MESSAGES = 200
 
         /**
          * Wire-format marker on the leading user-text line that flips the

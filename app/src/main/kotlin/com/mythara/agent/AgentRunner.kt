@@ -6,6 +6,7 @@ import com.mythara.mic.LanguageDetector
 import com.mythara.mic.Tts
 import com.mythara.services.AgentForegroundService
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -149,6 +150,51 @@ class AgentRunner @Inject constructor(
                 endTurn()
             }
         }
+    }
+
+    /**
+     * Blocking variant of [submit]. Runs the identical lifecycle wrap
+     * (FGS keepalive, mood pre-pass, turnEvents mirror, TTS + reply
+     * notification on Finished) but SUSPENDS until the turn completes
+     * and returns the agent's final text.
+     *
+     * Returns null when the turn ended without a [AgentLoop.Turn.Finished]
+     * event — i.e. it hit [AgentLoop.Turn.Error] or [AgentLoop.Turn.MissingApiKey],
+     * or `text` was blank — so the caller can record a failure.
+     *
+     * Used by [com.mythara.tasks.TaskExecutor]: a cross-device task
+     * needs the agent's actual answer written into its `result_text`,
+     * not the old optimistic "submitted to agent" placeholder.
+     *
+     * The agent turn runs in [scope] (not the caller's), so if the
+     * caller is cancelled while awaiting, the turn keeps running to
+     * completion — the same detachment guarantee [submit] gives.
+     */
+    suspend fun submitAndAwait(text: String, fromVoice: Boolean): String? {
+        if (text.isBlank()) return null
+        val done = CompletableDeferred<String?>()
+        scope.launch {
+            beginTurn()
+            var finalText: String? = null
+            try {
+                runCatching { moodTracker.track(text, fromVoice) }
+                    .onFailure { Log.w(TAG, "mood track failed: ${it.message}") }
+                agent.submit(text, fromVoice = fromVoice).collect { turn ->
+                    _turnEvents.tryEmit(turn)
+                    if (turn is AgentLoop.Turn.Finished) {
+                        finalText = turn.finalText
+                        deliverFinished(turn)
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "agent loop threw", t)
+                _turnEvents.tryEmit(AgentLoop.Turn.Error(t.message ?: "agent threw", retryable = false))
+            } finally {
+                endTurn()
+                done.complete(finalText)
+            }
+        }
+        return done.await()
     }
 
     private fun beginTurn() {

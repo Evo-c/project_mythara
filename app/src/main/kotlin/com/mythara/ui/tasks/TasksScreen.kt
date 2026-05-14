@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -429,6 +430,8 @@ private fun TaskRow(task: TaskEntity, myId: String?, onCancel: (() -> Unit)?) {
                 text = "${Glyph.AccentBar} ${task.resultText}",
                 color = MytharaColors.FgDim,
                 style = MaterialTheme.typography.bodySmall,
+                maxLines = 12,
+                overflow = TextOverflow.Ellipsis,
             )
         }
         if (onCancel != null) {

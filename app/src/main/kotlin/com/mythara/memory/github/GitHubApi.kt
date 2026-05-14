@@ -3,6 +3,7 @@ package com.mythara.memory.github
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.HTTP
 import retrofit2.http.PUT
 import retrofit2.http.Path
 
@@ -56,5 +57,18 @@ interface GitHubApi {
         @Path("repo") repo: String,
         @Path("path", encoded = true) path: String,
         @Body body: PutContentRequest,
+    ): Response<PutContentResponse>
+
+    /**
+     * Delete a file. The GitHub Contents API delete endpoint takes a
+     * request body (message + sha + branch), which a bare `@DELETE`
+     * can't carry — hence `@HTTP(hasBody = true)`.
+     */
+    @HTTP(method = "DELETE", path = "repos/{owner}/{repo}/contents/{path}", hasBody = true)
+    suspend fun deleteContents(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("path", encoded = true) path: String,
+        @Body body: DeleteContentRequest,
     ): Response<PutContentResponse>
 }

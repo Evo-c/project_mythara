@@ -52,6 +52,18 @@ interface MessageDao {
     @Query("SELECT * FROM messages ORDER BY ts_millis ASC")
     suspend fun listAll(): List<MessageRow>
 
+    /**
+     * The most recent [limit] rows, returned oldest-first so the result
+     * is a drop-in for [listAll] in the agent loop's request builder.
+     * Bounds the context the agent ships to the model — `listAll` is
+     * unbounded and a large history (e.g. after a cross-device restore)
+     * otherwise 400s MiniMax.
+     */
+    @Query(
+        "SELECT * FROM (SELECT * FROM messages ORDER BY ts_millis DESC LIMIT :limit) ORDER BY ts_millis ASC",
+    )
+    suspend fun listRecent(limit: Int): List<MessageRow>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(row: MessageRow): Long
 
