@@ -77,6 +77,15 @@ data class LifelineEntity(
     @ColumnInfo(name = "synced_at_ms") val syncedAtMs: Long? = null,
     /** True if this row was hydrated from a cross-device sync rather than scanned locally. */
     @ColumnInfo(name = "is_remote") val isRemote: Boolean = false,
+    /**
+     * Tombstone marker. Set true when [PhotoScanner] notices the
+     * underlying MediaStore id is gone (user deleted the photo from
+     * gallery). The row stays in the DB so the deletion synchronises
+     * to other devices on the next memory sync, but the UI hides it
+     * everywhere except the per-device tombstone log.
+     */
+    @ColumnInfo(name = "is_deleted") val isDeleted: Boolean = false,
+    @ColumnInfo(name = "deleted_at_ms") val deletedAtMs: Long? = null,
 )
 
 enum class LifelineCaptionStatus {
@@ -104,6 +113,7 @@ interface LifelineDao {
     @Query(
         """
         SELECT * FROM lifeline_entries
+        WHERE is_deleted = 0
         ORDER BY taken_ms DESC
         LIMIT :limit
         """,
@@ -118,7 +128,7 @@ interface LifelineDao {
     @Query(
         """
         SELECT * FROM lifeline_entries
-        WHERE taken_ms > :fromMs AND taken_ms <= :toMs
+        WHERE taken_ms > :fromMs AND taken_ms <= :toMs AND is_deleted = 0
         ORDER BY taken_ms ASC
         """,
     )
@@ -128,6 +138,7 @@ interface LifelineDao {
         """
         SELECT * FROM lifeline_entries
         WHERE caption_status = :pending AND caption_attempts < :maxAttempts
+            AND is_deleted = 0 AND is_remote = 0
         ORDER BY taken_ms DESC
         LIMIT :limit
         """,
@@ -195,20 +206,50 @@ interface LifelineDao {
     @Query("SELECT MAX(added_ms) FROM lifeline_entries WHERE is_remote = 0")
     suspend fun lastScannedAddedMs(): Long?
 
-    /** Live observation for the chat surface's interleaved timeline. */
-    @Query("SELECT * FROM lifeline_entries ORDER BY taken_ms ASC LIMIT :limit")
+    /** Live observation for the chat surface's interleaved timeline.
+     *  Skips deleted rows so they vanish from the timeline the moment
+     *  the scanner tombstones them. */
+    @Query("SELECT * FROM lifeline_entries WHERE is_deleted = 0 ORDER BY taken_ms ASC LIMIT :limit")
     fun observeRecent(limit: Int = 500): Flow<List<LifelineEntity>>
+
+    /** Local rows only (deviceId = this device, is_remote = false). The
+     *  scanner uses this to cross-reference what's still on MediaStore
+     *  vs what's been deleted. */
+    @Query("SELECT * FROM lifeline_entries WHERE device_id = :deviceId AND is_remote = 0 AND is_deleted = 0")
+    suspend fun listLocalLive(deviceId: String): List<LifelineEntity>
+
+    /** Tombstone a row that's been deleted from the gallery. */
+    @Query(
+        """
+        UPDATE lifeline_entries
+        SET is_deleted = 1, deleted_at_ms = :nowMs, synced_at_ms = NULL
+        WHERE id = :id
+        """,
+    )
+    suspend fun markDeleted(id: Long, nowMs: Long)
 }
 
-@Database(entities = [LifelineEntity::class], version = 1, exportSchema = false)
+@Database(entities = [LifelineEntity::class], version = 2, exportSchema = false)
 abstract class LifelineDb : RoomDatabase() {
     abstract fun dao(): LifelineDao
+}
+
+/**
+ * v1 → v2 adds is_deleted + deleted_at_ms for the photo-deletion-sync
+ * feature. Defaults give existing rows is_deleted=0 (i.e. live) so the
+ * timeline doesn't suddenly empty after upgrade.
+ */
+private val MIGRATION_LIFELINE_1_2 = object : androidx.room.migration.Migration(1, 2) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE lifeline_entries ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE lifeline_entries ADD COLUMN deleted_at_ms INTEGER")
+    }
 }
 
 @Singleton
 class LifelineRepository @Inject constructor(@ApplicationContext ctx: Context) {
     private val db: LifelineDb = Room.databaseBuilder(
         ctx, LifelineDb::class.java, "mythara_lifeline.db",
-    ).build()
+    ).addMigrations(MIGRATION_LIFELINE_1_2).build()
     val dao: LifelineDao = db.dao()
 }

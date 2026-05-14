@@ -89,6 +89,12 @@ fun TwoPaneLayout(
                         launchSingleTop = true
                     }
                 },
+                onOpenTimeline = {
+                    rightNav.navigate(RightPaneRoutes.Timeline) {
+                        popUpTo(RightPaneRoutes.Welcome) { inclusive = false }
+                        launchSingleTop = true
+                    }
+                },
             )
         }
 
@@ -164,6 +170,15 @@ fun TwoPaneLayout(
                         },
                     )
                 }
+                composable(RightPaneRoutes.Timeline) {
+                    com.mythara.ui.lifeline.TimelineGridPane(
+                        onClose = {
+                            if (!rightNav.popBackStack()) {
+                                rightNav.navigate(RightPaneRoutes.Welcome) { launchSingleTop = true }
+                            }
+                        },
+                    )
+                }
             }
         }
     }
@@ -206,4 +221,5 @@ object RightPaneRoutes {
     const val About = "rp_about"
     const val SecretSettings = "rp_secret"
     const val AppDrawer = "rp_app_drawer"
+    const val Timeline = "rp_timeline"
 }

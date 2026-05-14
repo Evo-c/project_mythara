@@ -1068,6 +1068,11 @@ class MemorySync @Inject constructor(
         val capAt: Long? = null,
         val name: String? = null,      // display name
         val place: String? = null,
+        /** Tombstone marker — true means "the user deleted this photo,
+         *  propagate the deletion". Restore drops the corresponding
+         *  local row. */
+        val del: Boolean = false,
+        val delAt: Long? = null,
     )
 
     /** Per-contact analytics row — one per line in
@@ -1355,6 +1360,8 @@ internal fun com.mythara.lifeline.LifelineEntity.toExport(): MemorySync.Lifeline
         capAt = captionedAtMs,
         name = displayName,
         place = placeLabel,
+        del = isDeleted,
+        delAt = deletedAtMs,
     )
 
 /**
@@ -1387,4 +1394,6 @@ internal fun MemorySync.LifelineExport.toRow(): com.mythara.lifeline.LifelineEnt
         captionModel = capModel,
         captionedAtMs = capAt,
         isRemote = true,
+        isDeleted = del,
+        deletedAtMs = delAt,
     )

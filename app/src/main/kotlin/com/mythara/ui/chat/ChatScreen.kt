@@ -87,6 +87,8 @@ fun ChatScreen(
      * mode.
      */
     onOpenAppDrawer: (() -> Unit)? = null,
+    /** Same pattern for the lifeline timeline grid. */
+    onOpenTimeline: (() -> Unit)? = null,
     vm: ChatViewModel = hiltViewModel(),
 ) {
     val ui by vm.ui.collectAsState()
@@ -261,14 +263,18 @@ fun ChatScreen(
             .padding(insets),
     ) {
         var appDrawerOpen by remember { mutableStateOf(false) }
-        // Two-pane mode hands us [onOpenAppDrawer] so the drawer lands
-        // in the right pane (same surface as People/Settings). Single-
-        // pane mode leaves it null and we toggle a local bottom sheet.
+        var timelineOpen by remember { mutableStateOf(false) }
+        // Two-pane mode hands us [onOpenAppDrawer] / [onOpenTimeline]
+        // so those surfaces land in the right pane (same surface as
+        // People/Settings). Single-pane leaves them null and we toggle
+        // local bottom sheets.
         val openDrawer: () -> Unit = onOpenAppDrawer ?: { appDrawerOpen = true }
+        val openTimeline: () -> Unit = onOpenTimeline ?: { timelineOpen = true }
         ChatHeader(
             onOpenSettings = onOpenSettings,
             onOpenPeople = onOpenPeople,
             onOpenAppDrawer = openDrawer,
+            onOpenTimeline = openTimeline,
             thinking = ui.thinking,
             continuousMode = ui.continuousMode,
             onToggleContinuous = { vm.setContinuousMode(!ui.continuousMode) },
@@ -276,6 +282,19 @@ fun ChatScreen(
 
         if (appDrawerOpen && onOpenAppDrawer == null) {
             com.mythara.ui.launcher.AppDrawerSheet(onDismiss = { appDrawerOpen = false })
+        }
+        if (timelineOpen && onOpenTimeline == null) {
+            com.mythara.ui.lifeline.TimelineGridSheet(onDismiss = { timelineOpen = false })
+        }
+
+        // Lifeline filter chip strip. Visible only when there ARE
+        // foreign-device photos in the timeline — no point offering
+        // a filter that wouldn't do anything on a single-device feed.
+        if (ui.hasRemoteLifeline) {
+            LifelineFilterChips(
+                current = ui.lifelineFilter,
+                onSelect = { vm.setLifelineFilter(it) },
+            )
         }
 
         Box(modifier = Modifier.weight(1f).fillMaxSize()) {
@@ -339,6 +358,7 @@ private fun ChatHeader(
     onOpenSettings: () -> Unit,
     onOpenPeople: () -> Unit,
     onOpenAppDrawer: () -> Unit,
+    onOpenTimeline: () -> Unit,
     thinking: Boolean,
     continuousMode: Boolean,
     onToggleContinuous: () -> Unit,
@@ -393,6 +413,24 @@ private fun ChatHeader(
                 Text(
                     text = "${Glyph.DiamondFilled} people",
                     style = MaterialTheme.typography.labelMedium.copy(color = MytharaColors.Charple),
+                )
+            }
+            Spacer(Modifier.size(8.dp))
+            // Timeline pill — Bok mint. Tap opens the dedicated
+            // lifeline grid screen (months → photos grid). Inline
+            // photos still appear in the chat scrollback; this is the
+            // "browse my memory" surface for skimming.
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(MytharaColors.Surface)
+                    .border(1.dp, MytharaColors.Bok, CircleShape)
+                    .clickable(onClick = onOpenTimeline)
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    text = "${Glyph.DiamondFilled} memory",
+                    style = MaterialTheme.typography.labelMedium.copy(color = MytharaColors.Bok),
                 )
             }
             Spacer(Modifier.size(8.dp))
@@ -627,5 +665,55 @@ private fun Banner(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(text = text, color = color, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/**
+ * Three-chip filter strip for lifeline photos in the chat scrollback.
+ * Shown only when there's at least one foreign-device photo in the
+ * timeline (controlled by UiState.hasRemoteLifeline).
+ */
+@Composable
+private fun LifelineFilterChips(
+    current: ChatViewModel.LifelineFilter,
+    onSelect: (ChatViewModel.LifelineFilter) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "${Glyph.AccentBar} photos:",
+            color = MytharaColors.FgDim,
+            style = MaterialTheme.typography.labelSmall,
+        )
+        FilterChip(label = "all", active = current == ChatViewModel.LifelineFilter.ALL) {
+            onSelect(ChatViewModel.LifelineFilter.ALL)
+        }
+        FilterChip(label = "this device", active = current == ChatViewModel.LifelineFilter.LOCAL) {
+            onSelect(ChatViewModel.LifelineFilter.LOCAL)
+        }
+        FilterChip(label = "other devices", active = current == ChatViewModel.LifelineFilter.REMOTE) {
+            onSelect(ChatViewModel.LifelineFilter.REMOTE)
+        }
+    }
+}
+
+@Composable
+private fun FilterChip(label: String, active: Boolean, onClick: () -> Unit) {
+    val border = if (active) MytharaColors.Mustard else MytharaColors.SurfaceHigh
+    val txt = if (active) MytharaColors.Mustard else MytharaColors.FgMute
+    Box(
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(MytharaColors.Surface)
+            .border(1.dp, border, CircleShape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 3.dp),
+    ) {
+        Text(text = label, color = txt, style = MaterialTheme.typography.labelSmall)
     }
 }

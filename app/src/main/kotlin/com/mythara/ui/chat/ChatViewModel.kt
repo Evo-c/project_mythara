@@ -304,6 +304,13 @@ class ChatViewModel @Inject constructor(
 
     enum class ToolState { Running, Success, Failure }
 
+    /**
+     * Filter applied to LifelinePhoto cards in the scrollback. The
+     * user picks via the chip strip above the transcript when there's
+     * more than one device contributing to the timeline.
+     */
+    enum class LifelineFilter { ALL, LOCAL, REMOTE }
+
     data class UiState(
         val items: List<ChatItem> = emptyList(),
         val streaming: String? = null,
@@ -321,6 +328,12 @@ class ChatViewModel @Inject constructor(
         val continuousMode: Boolean = false,
         /** True between the user's wake utterance and Lumi's TTS reply finishing. */
         val speaking: Boolean = false,
+        /** Current per-device filter for lifeline photos. */
+        val lifelineFilter: LifelineFilter = LifelineFilter.ALL,
+        /** True when the timeline contains photos from devices other
+         *  than this one — the filter chip strip is hidden when false
+         *  (no point offering a filter that does nothing). */
+        val hasRemoteLifeline: Boolean = false,
     )
 
     private val inflightTools = mutableMapOf<String, ChatItem.Tool>()
@@ -448,6 +461,18 @@ class ChatViewModel @Inject constructor(
 
     fun setContinuousMode(value: Boolean) = _ui.update { it.copy(continuousMode = value) }
 
+    fun setLifelineFilter(value: LifelineFilter) {
+        _ui.update { it.copy(lifelineFilter = value) }
+        // Re-render so the new filter applies immediately. Cheap —
+        // rebuildItems reads from in-memory state; no DB hit needed.
+        viewModelScope.launch {
+            rebuildItems(
+                rows = runCatching { history.dao.listAll() }.getOrDefault(emptyList()),
+                lifeline = runCatching { lifelineRepo.dao.listRecent(limit = 500) }.getOrDefault(emptyList()),
+            )
+        }
+    }
+
     private fun rebuildItems(
         rows: List<MessageRow>,
         lifeline: List<com.mythara.lifeline.LifelineEntity> = emptyList(),
@@ -558,11 +583,24 @@ class ChatViewModel @Inject constructor(
         // Splice lifeline photos into the timeline. Each row is tagged
         // with takenMs and merged with chat items so the surface reads
         // as one chronological feed — "what I did + what I shot."
+        // Per-device filter is applied here so the chip strip works
+        // without a re-fetch from disk.
+        val filter = _ui.value.lifelineFilter
+        val localDevForLifeline = cachedLocalDeviceId
+        var hasRemote = false
         for (photo in lifeline) {
+            val isLocalPhoto = !photo.isRemote && photo.uri.isNotBlank() && photo.deviceId == localDevForLifeline
+            if (!isLocalPhoto) hasRemote = true
+            val keep = when (filter) {
+                LifelineFilter.ALL -> true
+                LifelineFilter.LOCAL -> isLocalPhoto
+                LifelineFilter.REMOTE -> !isLocalPhoto
+            }
+            if (!keep) continue
             tagged.add(
                 photo.takenMs to ChatItem.LifelinePhoto(
                     key = "lf:${photo.deviceId}:${photo.mediaStoreId}",
-                    isLocal = !photo.isRemote && photo.uri.isNotBlank(),
+                    isLocal = isLocalPhoto,
                     uri = photo.uri,
                     captionText = photo.captionText,
                     captionStatus = photo.captionStatus,
@@ -578,6 +616,6 @@ class ChatViewModel @Inject constructor(
         // so a tool's stdout still follows its own start row.
         val items = tagged.sortedBy { it.first }.map { it.second }.toMutableList()
         items.addAll(inflightTools.values)
-        _ui.update { it.copy(items = items) }
+        _ui.update { it.copy(items = items, hasRemoteLifeline = hasRemote) }
     }
 }

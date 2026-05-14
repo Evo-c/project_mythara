@@ -55,17 +55,38 @@ class PhotoScanner @Inject constructor(
         }
         val myId = runCatching { deviceIdStore.id() }.getOrElse { "unknown-device" }
         val lastAddedMs = runCatching { repo.dao.lastScannedAddedMs() }.getOrDefault(null)
+        val isFirstScan = lastAddedMs == null
         // MediaStore stores DATE_ADDED in seconds since epoch. Convert.
         val sinceSec = if (lastAddedMs != null) {
             (lastAddedMs / 1000L).coerceAtLeast(0L)
         } else {
-            // First scan — cap at 30 days back so we don't try to caption
-            // the entire camera roll in one go.
+            // First scan — pull the last 30 days so the timeline isn't
+            // empty on install. We still INSERT every photo so the user
+            // sees their recent shots in the timeline, but we mark
+            // pre-install photos as SKIPPED so the captioner doesn't
+            // burn through hundreds of Gemini calls on day one. The
+            // user can opt to re-caption these later from Settings.
             ((System.currentTimeMillis() - FIRST_SCAN_WINDOW_MS) / 1000L).coerceAtLeast(0L)
         }
+        val nowMs = System.currentTimeMillis()
         val rows = queryCameraPhotos(sinceSec)
         var inserted = 0
+        var skippedFromBackfill = 0
         for (row in rows) {
+            // First-scan rows that were ALREADY in the camera roll
+            // before this install are marked SKIPPED. The cutoff is
+            // "5 minutes before now" — anything older was on disk
+            // before we started, anything newer was almost certainly
+            // taken just now (e.g. the user installed and immediately
+            // snapped a photo). The 5-min slop accounts for permission
+            // grant + first-scan latency.
+            val isBackfill = isFirstScan && row.addedMs < nowMs - BACKFILL_SLOP_MS
+            val status = if (isBackfill) {
+                skippedFromBackfill++
+                LifelineCaptionStatus.SKIPPED.name
+            } else {
+                LifelineCaptionStatus.PENDING.name
+            }
             val entity = LifelineEntity(
                 deviceId = myId,
                 mediaStoreId = row.id,
@@ -80,13 +101,73 @@ class PhotoScanner @Inject constructor(
                 sizeBytes = row.sizeBytes,
                 lat = row.lat,
                 lng = row.lng,
-                captionStatus = LifelineCaptionStatus.PENDING.name,
+                captionStatus = status,
+                captionText = if (isBackfill) "(captioning skipped — pre-install photo)" else null,
             )
             val id = runCatching { repo.dao.insertIfAbsent(entity) }.getOrDefault(-1L)
             if (id > 0L) inserted++
         }
-        Log.d(TAG, "scan: ${rows.size} photo(s) since ${sinceSec}s, $inserted new")
+        Log.d(
+            TAG,
+            "scan: ${rows.size} photo(s) since ${sinceSec}s, $inserted new" +
+                if (skippedFromBackfill > 0) " ($skippedFromBackfill SKIPPED as backfill)" else "",
+        )
+        // Tombstone pass — find LOCAL rows whose MediaStore id no
+        // longer exists in the gallery (user deleted the photo).
+        // Marking them is_deleted=true makes them vanish from the
+        // local timeline AND ships the tombstone to other devices
+        // on the next memory sync. The full-roll query on first
+        // launch is OK; subsequent runs are bounded by the table
+        // size, not the user's full camera roll.
+        val tombstoned = runCatching { tombstoneDeleted(myId) }.getOrDefault(0)
+        if (tombstoned > 0) {
+            Log.d(TAG, "scan: tombstoned $tombstoned deleted photo(s)")
+        }
         ScanResult(scanned = rows.size, inserted = inserted, skipped = null)
+    }
+
+    /**
+     * For every LOCAL lifeline row we have, check whether its MediaStore
+     * id still resolves. If not, the photo was deleted from the gallery
+     * — tombstone the row so it vanishes from the timeline and the
+     * deletion syncs to peers.
+     *
+     * Single bulk query: get every live MediaStore image id this scan
+     * sees, then diff against our local row set. O(N) over the gallery
+     * + O(M) over our rows.
+     */
+    private suspend fun tombstoneDeleted(myDeviceId: String): Int {
+        val liveIds = collectAllLiveMediaStoreIds()
+        if (liveIds.isEmpty()) return 0 // safety — never tombstone the entire roll
+        val locals = repo.dao.listLocalLive(myDeviceId)
+        val now = System.currentTimeMillis()
+        var n = 0
+        for (row in locals) {
+            if (row.mediaStoreId !in liveIds) {
+                repo.dao.markDeleted(row.id, now)
+                n++
+            }
+        }
+        return n
+    }
+
+    /**
+     * Lightweight projection — just every _ID currently in
+     * EXTERNAL_CONTENT_URI (no bucket filter). We pull the full set
+     * because a photo move (DCIM/Camera → DCIM/SomeAlbum) would
+     * otherwise look like a deletion from the camera bucket
+     * specifically.
+     */
+    private fun collectAllLiveMediaStoreIds(): Set<Long> {
+        val out = HashSet<Long>()
+        val proj = arrayOf(MediaStore.Images.Media._ID)
+        ctx.contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, proj, null, null, null,
+        )?.use { c ->
+            val idIdx = c.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+            while (c.moveToNext()) out.add(c.getLong(idIdx))
+        }
+        return out
     }
 
     private fun queryCameraPhotos(sinceSec: Long): List<RawPhoto> {
@@ -193,6 +274,11 @@ class PhotoScanner @Inject constructor(
     companion object {
         private const val TAG = "Mythara/PhotoScan"
         private const val FIRST_SCAN_WINDOW_MS = 30L * 24L * 60L * 60L * 1000L
+
+        /** Photos older than (now - this) on the first scan are marked
+         *  SKIPPED so the captioner doesn't backfill the user's
+         *  entire pre-install camera roll. */
+        private const val BACKFILL_SLOP_MS = 5L * 60_000L
 
         /**
          * Buckets that almost always carry camera-captured photos.
