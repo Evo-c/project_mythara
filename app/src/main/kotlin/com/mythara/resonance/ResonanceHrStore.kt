@@ -40,10 +40,20 @@ class ResonanceHrStore @Inject constructor(
     private var flushJob: Job? = null
 
     /** Add a fresh HR reading from the watch. Drops out-of-range
-     *  samples silently; trims the buffer to [BUFFER_CAP]. */
+     *  samples silently; trims the buffer to [BUFFER_CAP]. Dedupes
+     *  on `(tsMillis, bpm)` so two sources can push concurrently
+     *  without double-counting — e.g. the Pixel Watch's direct
+     *  RESONANCE_HR stream and the phone's Health-Connect poller
+     *  both forward the same Fitbit reading. */
     fun push(bpm: Int, tsMillis: Long) {
         if (bpm !in VALID_BPM) return
         synchronized(lock) {
+            // Cheap dedupe — scan from the tail since a duplicate is
+            // overwhelmingly the most-recent push or one of the few
+            // before it. Buffer size is bounded to BUFFER_CAP so this
+            // is constant-ish in practice.
+            val dup = buffer.asReversed().any { it.tsMillis == tsMillis && it.bpm == bpm }
+            if (dup) return
             buffer.addLast(Sample(bpm, tsMillis))
             while (buffer.size > BUFFER_CAP) buffer.removeFirst()
         }
