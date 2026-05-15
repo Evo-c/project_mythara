@@ -140,6 +140,13 @@ class MytharaApp : Application(), Configuration.Provider {
         // BootReceiver also calls rescheduleAll() on device boot
         // because AlarmManager doesn't survive reboots.
         reminderAlarmScheduler.start()
+        // Calendar pre-announcer — schedules AlarmManager exact alarms
+        // 3 minutes before every upcoming calendar event. The periodic
+        // worker re-scans every 15 min to catch newly-added events;
+        // alarms fire independently so survive process kill / reboot.
+        // Whole feature is a no-op until the user flips
+        // CalendarPreAnnounceStore.enabled.
+        com.mythara.calendar.CalendarPreAnnounceWorker.ensureScheduled(this)
         // Health Connect snapshot worker — pulls last-24h aggregates
         // every 6h on charging, lands semantic vault rows tagged
         // topic:health. Silently no-ops when no permissions granted

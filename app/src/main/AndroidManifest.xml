@@ -416,6 +416,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- Calendar pre-announce alarms — wake 3 minutes before any
+             scheduled calendar event and announce via TTS or Music
+             Mode tones. -->
+        <receiver
+            android:name=".calendar.CalendarPreAnnounceReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.mythara.calendar.PRE_ANNOUNCE_FIRE" />
+            </intent-filter>
+        </receiver>
+
         <!-- Boot + app-update receiver. Wakes Mythara's process the
              moment the device finishes booting (or after an app
              update), so the assistant is ready without the user

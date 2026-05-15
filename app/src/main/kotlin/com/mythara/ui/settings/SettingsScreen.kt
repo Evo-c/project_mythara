@@ -102,6 +102,9 @@ fun SettingsScreen(
         ProcessCallNotificationsPanel()
 
         Spacer(Modifier.height(16.dp))
+        CalendarPreAnnouncePanel()
+
+        Spacer(Modifier.height(16.dp))
         AutoReplyPrefixPanel()
 
         Spacer(Modifier.height(16.dp))
