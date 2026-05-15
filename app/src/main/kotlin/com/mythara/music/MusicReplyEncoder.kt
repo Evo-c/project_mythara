@@ -21,9 +21,17 @@ class MusicReplyEncoder @Inject constructor(
     private val vocabulary: MusicVocabulary,
 ) {
 
-    /** A motif plus the token it represents — the chat UI uses
-     *  [token] for the decode-tap reinforce flow. */
+    /** A motif plus the token it represents. */
     data class TokenMotif(val token: String, val motif: Motif)
+
+    /** A piece of the reply text laid out for display. Words that
+     *  carry a motif have one; whitespace / punctuation / filtered
+     *  stopwords are returned with `motif == null` so the renderer
+     *  can paint them in the default colour. */
+    data class Segment(
+        val text: String,
+        val motif: Motif?,
+    )
 
     suspend fun encode(text: String): List<TokenMotif> {
         val raw = text.split(WHITESPACE).asSequence()
@@ -34,6 +42,46 @@ class MusicReplyEncoder @Inject constructor(
         return raw.map { tok ->
             TokenMotif(token = tok, motif = vocabulary.motifFor(tok))
         }
+    }
+
+    /**
+     * Same vocabulary lookup as [encode], but returns the WHOLE
+     * input text broken into ordered [Segment]s — every word, every
+     * space, every punctuation mark in its original position. The
+     * chat bubble uses this to paint each word in the colour of its
+     * motif while preserving the original text exactly.
+     *
+     * The same [MAX_MOTIFS_PER_REPLY] cap applies: once we've
+     * minted that many distinct motifs, subsequent words are
+     * returned with `motif == null` (they'll render in the default
+     * colour but the audio playback won't go on forever).
+     */
+    suspend fun renderSegments(text: String): List<Segment> {
+        if (text.isEmpty()) return emptyList()
+        val out = ArrayList<Segment>()
+        var motifsAssigned = 0
+        var i = 0
+        val n = text.length
+        while (i < n) {
+            val start = i
+            val ch = text[i]
+            if (ch.isLetterOrDigit()) {
+                // Walk the word.
+                while (i < n && text[i].isLetterOrDigit()) i++
+                val word = text.substring(start, i)
+                val key = word.lowercase()
+                val motif = if (key !in STOPWORDS && motifsAssigned < MAX_MOTIFS_PER_REPLY) {
+                    motifsAssigned++
+                    vocabulary.motifFor(key)
+                } else null
+                out.add(Segment(text = word, motif = motif))
+            } else {
+                // Walk a run of non-word chars (spaces + punctuation)
+                while (i < n && !text[i].isLetterOrDigit()) i++
+                out.add(Segment(text = text.substring(start, i), motif = null))
+            }
+        }
+        return out
     }
 
     companion object {

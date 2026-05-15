@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -664,9 +665,11 @@ private fun Transcript(
 private fun TextBubble(
     text: String,
     kind: ChatViewModel.TextKind,
-    /** When true, hide the body text behind a decode-tap pair of
-     *  "I got it" / "show me" buttons. Only ever true for assistant
-     *  Reply bubbles; user / notification / update bubbles ignore. */
+    /** When true and [kind] is Reply, the body text is rendered with
+     *  each content word coloured by its motif's OM-harmonic hue,
+     *  with a small ▶ replay chip below. The hide-then-reveal
+     *  decode-tap flow has been retired — passive visual association
+     *  is the learning surface. */
     musicMode: Boolean = false,
     onReplayMusic: () -> Unit = {},
     onReinforce: (Boolean) -> Unit = {},
@@ -699,10 +702,16 @@ private fun TextBubble(
         text
     }
 
-    // Per-bubble reveal state for Music Mode. Keyed on the text so a
-    // reload or recomposition with a different message resets. Skipped
-    // entirely when not in music mode → bubble looks unchanged.
-    var revealed by remember(text) { mutableStateOf(!musicMode) }
+    // Music Mode renders the body as a coloured AnnotatedString —
+    // each non-stopword word gets the colour of its motif (the
+    // circular-mean of its 3 OM-harmonic hues). Computed once per
+    // (text, musicMode) pair and cached via produceState so we
+    // don't re-encode on every recomposition.
+    val composedAnnotated = if (musicMode && kind == ChatViewModel.TextKind.Reply) {
+        produceMusicAnnotated(displayText, bodyColor)
+    } else {
+        null
+    }
 
     Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = align) {
         Text(
@@ -717,55 +726,45 @@ private fun TextBubble(
                 .border(1.dp, border, RoundedCornerShape(10.dp))
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
-            if (musicMode && !revealed) {
-                // Decode-tap state — body is hidden behind a "test
-                // yourself" affordance. The tone phrase was already
-                // played when the message arrived; the user can
-                // replay, then choose how they did before revealing.
-                Column(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (composedAnnotated != null) {
                     Text(
-                        text = "♪ tone phrase · what did mythara say?",
-                        color = MytharaColors.FgDim,
-                        style = MaterialTheme.typography.bodySmall,
+                        text = composedAnnotated,
+                        color = bodyColor,
+                        style = MaterialTheme.typography.bodyMedium,
                     )
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         BubbleChip(
-                            label = "▶ replay",
+                            label = "▶ replay tones",
                             color = MytharaColors.SurfaceHigh,
                         ) { onReplayMusic() }
-                        BubbleChip(
-                            label = "✓ got it",
-                            color = MytharaColors.Bok,
-                        ) {
-                            onReinforce(true)
-                            revealed = true
-                        }
-                        BubbleChip(
-                            label = "show me",
-                            color = MytharaColors.SurfaceHigh,
-                        ) {
-                            onReinforce(false)
-                            revealed = true
-                        }
                     }
-                }
-            } else {
-                Column(modifier = Modifier.fillMaxWidth()) {
+                } else {
                     Text(text = displayText, color = bodyColor, style = MaterialTheme.typography.bodyMedium)
-                    if (musicMode) {
-                        Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            BubbleChip(
-                                label = "▶ replay tones",
-                                color = MytharaColors.SurfaceHigh,
-                            ) { onReplayMusic() }
-                        }
-                    }
                 }
             }
         }
     }
+}
+
+/** Encode the reply text into a coloured [AnnotatedString] in Music
+ *  Mode. Pulls segment colours through [ChatViewModel.composeMusic
+ *  Segments] so the View Model owns the encoder reference. Returns
+ *  null (and falls back to plain text) until the suspending encode
+ *  completes — chat bubbles are typically composed many times before
+ *  the user even reads them, and we'd rather show the unstyled
+ *  text immediately than show nothing. */
+@Composable
+private fun produceMusicAnnotated(text: String, defaultColor: androidx.compose.ui.graphics.Color): androidx.compose.ui.text.AnnotatedString? {
+    val vm: ChatViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+    val state = androidx.compose.runtime.produceState<androidx.compose.ui.text.AnnotatedString?>(
+        initialValue = null,
+        text,
+    ) {
+        value = vm.composeMusicAnnotated(text, defaultColor.toArgb())
+    }
+    return state.value
 }
 
 @Composable

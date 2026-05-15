@@ -6,6 +6,10 @@ import com.mythara.agent.AgentLoop
 import com.mythara.agent.SpokenText
 import com.mythara.agent.Thinks
 import com.mythara.data.HistoryRepository
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import com.mythara.data.MessageRow
 import com.mythara.mic.LanguageDetector
 import com.mythara.mic.Tts
@@ -559,7 +563,11 @@ class ChatViewModel @Inject constructor(
      *  "I knew it" (a hit on every token's motif); false means "show
      *  me" (a miss on every token's motif). The vocabulary's reshape
      *  logic decides when consistent misses warrant a new pitch
-     *  pattern. */
+     *  pattern.
+     *
+     *  Retained as a no-op-friendly entry point so any callers that
+     *  still wire to it don't break — the colour-based visual
+     *  learning loop replaces the explicit reinforce flow. */
     fun musicReinforceReply(text: String, gotIt: Boolean) {
         if (text.isBlank()) return
         viewModelScope.launch {
@@ -568,6 +576,33 @@ class ChatViewModel @Inject constructor(
                 tokens.forEach { tok -> musicVocabulary.reinforce(tok, hit = gotIt) }
             }
         }
+    }
+
+    /** Build the coloured AnnotatedString for a Music-Mode reply
+     *  bubble. Each word that has a motif gets its own colour (the
+     *  circular mean of its OM-harmonic note hues); stopwords and
+     *  punctuation fall through to [defaultArgb] so the bubble keeps
+     *  its normal colour palette in the gaps.
+     *
+     *  Returns null on encoder error — the bubble falls back to
+     *  plain unstyled text and remains readable. */
+    suspend fun composeMusicAnnotated(text: String, defaultArgb: Int): AnnotatedString? {
+        if (text.isBlank()) return null
+        return runCatching {
+            val segments = musicEncoder.renderSegments(text)
+            buildAnnotatedString {
+                for (seg in segments) {
+                    val argb = if (seg.motif != null) {
+                        com.mythara.music.MusicColors.colorForMotif(seg.motif)
+                    } else {
+                        defaultArgb
+                    }
+                    withStyle(SpanStyle(color = androidx.compose.ui.graphics.Color(argb))) {
+                        append(seg.text)
+                    }
+                }
+            }
+        }.getOrNull()
     }
 
     /**

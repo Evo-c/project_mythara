@@ -171,6 +171,22 @@ class MusicVocabulary @Inject constructor(
                     if (notes.isNotEmpty()) cache[k] = Motif(notes, h, m, g)
                 }.onFailure { Log.w(TAG, "skipping malformed vocab entry '$k': ${it.message}") }
             }
+            // One-shot migration: any motif whose notes don't come
+            // from the current OM-harmonic scale was minted on the
+            // legacy pentatonic — reshape it now so colour lookups
+            // and the underlying tone playback both line up. Keeps
+            // hit/miss history but bumps the generation so the user
+            // gets a fresh pitch pattern that matches the new scale.
+            val omSet = OM_HARMONICS.toSet()
+            val toMigrate = cache.filter { (_, m) -> m.notes.any { it !in omSet } }
+            if (toMigrate.isNotEmpty()) {
+                for ((key, old) in toMigrate) {
+                    val fresh = mintMotif(key, generation = old.generation + 1)
+                    cache[key] = fresh.copy(hits = old.hits, misses = old.misses)
+                }
+                Log.d(TAG, "migrated ${toMigrate.size} motif(s) onto OM-harmonic scale")
+                scheduleFlush()
+            }
             _vocab.value = cache.toMap()
             loaded = true
             Log.d(TAG, "loaded vocabulary: ${cache.size} motif(s)")
@@ -179,12 +195,12 @@ class MusicVocabulary @Inject constructor(
 
     /** Deterministic motif minter. Uses a stable hash of the token (+
      *  generation, so reshaped motifs differ from their predecessor)
-     *  to pick [NOTES_PER_MOTIF] notes from the [PENTATONIC] scale. */
+     *  to pick [NOTES_PER_MOTIF] notes from the [OM_HARMONICS] scale. */
     private fun mintMotif(key: String, generation: Int): Motif {
         val seed = stableHash("$key|$generation")
         val notes = (0 until NOTES_PER_MOTIF).map { i ->
             val mixed = seed.rotateLeft(i * 7) xor (i.toLong() * 0x9E3779B9L)
-            PENTATONIC[(abs(mixed) % PENTATONIC.size).toInt()]
+            OM_HARMONICS[(abs(mixed) % OM_HARMONICS.size).toInt()]
         }
         return Motif(notes = notes, hits = 0, misses = 0, generation = generation)
     }
@@ -215,14 +231,33 @@ class MusicVocabulary @Inject constructor(
          *  single "word", long enough to be distinguishable. */
         const val NOTES_PER_MOTIF = 3
 
-        /** Pentatonic scale across 2 octaves (C major). Pleasant,
-         *  ambient — random sequences from this set sound musical
-         *  rather than dissonant. 10 pitches × 3 notes per motif =
-         *  1000 unique combinations, plenty for a personal vocabulary. */
-        val PENTATONIC: List<Float> = listOf(
-            261.63f, 293.66f, 329.63f, 392.00f, 440.00f,    // C4 D4 E4 G4 A4
-            523.25f, 587.33f, 659.25f, 783.99f, 880.00f,    // C5 D5 E5 G5 A5
+        /** Harmonic series of 136.1 Hz — the Sanskrit "OM" base
+         *  frequency (Hans Cousto's calculation, derived from Earth's
+         *  orbital period via successive octave reductions; long
+         *  associated with the OM syllable in Indian classical and
+         *  contemporary sound-healing practice). Skipping the
+         *  fundamental (136.1 Hz, below the engine's MIN_HZ band)
+         *  and starting at the 2nd harmonic — every pitch here is
+         *  consonant with every other, since they all sit on the
+         *  natural overtone series of one root.
+         *
+         *  2nd  272.2 Hz   octave above OM
+         *  3rd  408.3 Hz   perfect-fifth above the octave
+         *  4th  544.4 Hz   two octaves above OM
+         *  5th  680.5 Hz   two octaves + major-third
+         *  6th  816.6 Hz   two octaves + perfect-fifth
+         *  7th  952.7 Hz   ≈ minor-seventh above the 4th
+         *  8th  1088.8 Hz  three octaves above OM
+         *  9th  1224.9 Hz  three octaves + major-second */
+        val OM_HARMONICS: List<Float> = listOf(
+            272.2f, 408.3f, 544.4f, 680.5f,
+            816.6f, 952.7f, 1088.8f, 1224.9f,
         )
+
+        /** Backwards-compat alias — keeps any callers that still
+         *  reference the old name compiling. */
+        @Deprecated("Use OM_HARMONICS", ReplaceWith("OM_HARMONICS"))
+        val PENTATONIC: List<Float> get() = OM_HARMONICS
 
         /** Sentinel for tokens that normalise to the empty string. */
         val SILENT_MOTIF = Motif(notes = emptyList())
