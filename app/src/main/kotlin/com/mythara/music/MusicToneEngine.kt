@@ -148,48 +148,58 @@ class MusicToneEngine @Inject constructor() {
         val releaseSamples = (sampleRate * RELEASE_MS / 1000).coerceAtMost(totalSamples / 2)
         val sustainSamples = (totalSamples - attackSamples - releaseSamples).coerceAtLeast(0)
 
-        // Layer the fundamental with its first three harmonics —
-        // amplitude decays as 1/n so the spectrum matches a vocal /
-        // organ-pipe stack rather than a pure sine. PLUS a constant
-        // 136.1 Hz "OM drone" sub-layer present in every note: that's
-        // the actual Sanskrit OM frequency, and having it always
-        // resonating underneath gives every motif the deep
-        // tanpura-style body the user's ear is reaching for. Without
-        // the drone, motifs that don't happen to use 136.1 Hz as one
-        // of their notes lose all the OM character.
+        // Sitar-flavoured timbre stack:
+        //  - Constant 136.1 Hz "OM drone" beneath everything — the
+        //    Sanskrit OM, always present so every motif carries deep
+        //    tanpura body. NOT vibrato'd: the drone is the ground.
+        //  - The note's fundamental + 5 harmonics, with a brighter
+        //    upper spectrum than a vocal stack ([1, 0.55, 0.42, 0.34,
+        //    0.24, 0.17]) — the extra weight on the 3rd–5th partials
+        //    is what gives a sitar its characteristic "buzz" / jawari
+        //    edge.
+        //  - Pitch VIBRATO on the variable harmonics (±18 cents at
+        //    6 Hz) — the meend wobble of a real sitar string. Drone
+        //    stays unmodulated so the foundation never wavers.
+        //  - Tremolo (AM) carries through from before for the OM-OM-OM
+        //    pulse on top of all that.
         //
-        // Harmonics above NYQUIST_GUARD are dropped so high motif
-        // notes don't alias. The OM drone is ALWAYS added even when
-        // freqHz IS 136.1 — the doubled fundamental just sounds a
-        // little fuller, no aliasing risk.
-        val harmonicGains = floatArrayOf(1.0f, 0.45f, 0.25f, 0.16f)
-        val activeOmegas = ArrayList<Double>(harmonicGains.size + 1)
-        val activeGains = ArrayList<Float>(harmonicGains.size + 1)
-        var gainSum = 0f
+        // Harmonics above NYQUIST_GUARD are dropped to avoid aliasing.
+        val sitarGains = floatArrayOf(1.0f, 0.55f, 0.42f, 0.34f, 0.24f, 0.17f)
 
-        // OM drone first.
-        activeOmegas.add(2.0 * PI * OM_DRONE_HZ / sampleRate.toDouble())
-        activeGains.add(OM_DRONE_GAIN)
-        gainSum += OM_DRONE_GAIN
+        // Drone is index 0; sitar harmonics follow.
+        val droneOmega = 2.0 * PI * OM_DRONE_HZ / sampleRate.toDouble()
+        var droneGainSum = OM_DRONE_GAIN
 
-        for ((idx, g) in harmonicGains.withIndex()) {
+        // Per-harmonic base frequencies (cached as doubles for the
+        // per-sample omega recomputation under vibrato).
+        data class Harm(val baseFreq: Double, val gain: Float)
+        val sitarHarms = ArrayList<Harm>(sitarGains.size)
+        for ((idx, g) in sitarGains.withIndex()) {
             val hz = freqHz * (idx + 1)
             if (hz > NYQUIST_GUARD_HZ) break
-            activeOmegas.add(2.0 * PI * hz / sampleRate.toDouble())
-            activeGains.add(g)
-            gainSum += g
+            sitarHarms.add(Harm(baseFreq = hz.toDouble(), gain = g))
+            droneGainSum += g
         }
         // Normalise so peak amplitude stays bounded regardless of how
-        // many harmonics we stacked, then drop master to leave headroom
-        // for the tremolo modulation below.
-        val masterGain = (VOLUME / gainSum) * (1f / (1f + TREMOLO_DEPTH))
-        val phases = DoubleArray(activeOmegas.size)
+        // many partials stacked, with extra headroom for the tremolo +
+        // vibrato modulations.
+        val masterGain = (VOLUME / droneGainSum) *
+            (1f / (1f + TREMOLO_DEPTH))
 
-        // Slow amplitude modulation — 5 Hz, ~14 % depth — gives the
-        // sustained "om-ing" pulse you hear in real chants. Without it
-        // the layered harmonics still feel synthetic.
+        // Phase accumulators — one per oscillator. Keep doubles for
+        // 380 ms × 44100 Hz integration without precision drift.
+        var dronePhase = 0.0
+        val sitarPhases = DoubleArray(sitarHarms.size)
+
+        // Tremolo (slow AM) and vibrato (slow FM) carriers.
         val tremoloOmega = 2.0 * PI * TREMOLO_RATE_HZ / sampleRate.toDouble()
         var tremoloPhase = 0.0
+        val vibratoOmega = 2.0 * PI * VIBRATO_RATE_HZ / sampleRate.toDouble()
+        var vibratoPhase = 0.0
+        // ±18 cents → freq ratio swing of (2^(18/1200) - 1) ≈ 0.0104.
+        val vibratoSwing = Math.pow(2.0, VIBRATO_DEPTH_CENTS / 1200.0) - 1.0
+        // Twopi over sample rate, factored out of the per-sample loop.
+        val twoPiOverSr = 2.0 * PI / sampleRate.toDouble()
 
         val chunk = ShortArray(CHUNK_SAMPLES)
         var i = 0
@@ -208,13 +218,27 @@ class MusicToneEngine @Inject constructor() {
                         0.5f * (1f + cos(PI.toFloat() * r / releaseSamples))
                     }
                 }
-                // Sum harmonic contributions for this sample.
-                var harmonicSum = 0.0
-                for (h in activeOmegas.indices) {
-                    harmonicSum += activeGains[h] * sin(phases[h])
-                    phases[h] += activeOmegas[h]
-                    if (phases[h] > 2 * PI) phases[h] -= 2 * PI
+
+                // Drone — fixed pitch, contributes regardless of
+                // vibrato so the OM ground never shifts.
+                var harmonicSum = OM_DRONE_GAIN.toDouble() * sin(dronePhase)
+                dronePhase += droneOmega
+                if (dronePhase > 2 * PI) dronePhase -= 2 * PI
+
+                // Vibrato factor for this sample — applied to all
+                // sitar harmonics (drone stays steady).
+                val vibratoFactor = 1.0 + vibratoSwing * sin(vibratoPhase)
+                vibratoPhase += vibratoOmega
+                if (vibratoPhase > 2 * PI) vibratoPhase -= 2 * PI
+
+                for (h in sitarHarms.indices) {
+                    val harm = sitarHarms[h]
+                    val instOmega = twoPiOverSr * harm.baseFreq * vibratoFactor
+                    sitarPhases[h] += instOmega
+                    if (sitarPhases[h] > 2 * PI) sitarPhases[h] -= 2 * PI
+                    harmonicSum += harm.gain * sin(sitarPhases[h])
                 }
+
                 val tremolo = 1.0 + TREMOLO_DEPTH * sin(tremoloPhase)
                 tremoloPhase += tremoloOmega
                 if (tremoloPhase > 2 * PI) tremoloPhase -= 2 * PI
@@ -265,10 +289,11 @@ class MusicToneEngine @Inject constructor() {
          *  the chat bubble updates inside this gap. */
         const val INTER_MOTIF_GAP_MS = 500
 
-        /** Raised-cosine attack/release windows. Attack stays short so
-         *  the tone arrives confidently; release is long so each note
-         *  fades like a chant — the OM "mmm" tail. */
-        private const val ATTACK_MS = 20
+        /** Raised-cosine attack/release windows. Attack is now sharp
+         *  enough for a plucked-string "twang" (a sitar's hallmark)
+         *  rather than the slower swell of a chant. Release stays
+         *  long so each note still fades with an OM "mmm" tail. */
+        private const val ATTACK_MS = 6
         private const val RELEASE_MS = 110
 
         /** Pitch band wide enough to include the OM fundamental
@@ -284,6 +309,15 @@ class MusicToneEngine @Inject constructor() {
          *  a sustained chant. */
         private const val TREMOLO_RATE_HZ = 5.0
         private const val TREMOLO_DEPTH = 0.14
+
+        /** Vibrato (slow frequency modulation) parameters — the
+         *  pitch wobble that makes a sitar string sound alive vs.
+         *  electronic. ~6 Hz wobble at ±18 cents (a small fraction
+         *  of a semitone) is the "meend" of Indian classical
+         *  fingerwork. Applied only to the variable note partials,
+         *  never the OM drone (which stays as the steady ground). */
+        private const val VIBRATO_RATE_HZ = 6.0
+        private const val VIBRATO_DEPTH_CENTS = 18.0
 
         /** Constant OM-fundamental drone layered under every note —
          *  the Sanskrit OM frequency (136.1 Hz, Cousto). Always
