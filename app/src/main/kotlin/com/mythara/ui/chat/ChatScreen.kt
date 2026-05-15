@@ -620,7 +620,20 @@ private fun Transcript(
     ) {
         items(items, key = { it.key }) { item ->
             when (item) {
-                is ChatViewModel.ChatItem.UserText -> TextBubble(text = item.text, kind = item.kind)
+                is ChatViewModel.ChatItem.UserText -> TextBubble(
+                    text = item.text,
+                    kind = item.kind,
+                    // Notifications appear in the chat as UserText
+                    // bubbles with kind=Notification — they're
+                    // visually right-side but they're _content_, not
+                    // user-typed. Apply music UX to those too so the
+                    // user can replay + colour-learn their words.
+                    // Pure user-typed bubbles (kind=User) stay
+                    // unstyled — the user knows their own words.
+                    musicMode = musicMode && item.kind == ChatViewModel.TextKind.Notification,
+                    onReplayMusic = { onReplayMusic(item.text) },
+                    onReinforce = { gotIt -> onReinforce(item.text, gotIt) },
+                )
                 is ChatViewModel.ChatItem.AssistantText -> TextBubble(
                     text = item.text,
                     kind = item.kind,
@@ -709,17 +722,17 @@ private fun TextBubble(
         text
     }
 
-    // Music Mode chrome — when on for any agent message kind (Reply
-    // OR Update — both go through the same Turn.Finished handler
-    // that auto-plays tones, so both need the matching visual
-    // affordances). The bubble shows the coloured/glowing text (when
-    // ready) AND a persistent ▶ replay chip (always, even before the
-    // colour-encode finishes — the chip should never disappear on
-    // the user just because the suspending encode is briefly behind
-    // a recomposition).
-    val isAgentBubble = kind == ChatViewModel.TextKind.Reply ||
-        kind == ChatViewModel.TextKind.Update
-    val isMusicReply = musicMode && isAgentBubble
+    // Music Mode chrome — applied to every text bubble that's part
+    // of the agent-side conversation surface (Reply, Update, AND
+    // Notification). Reply/Update auto-play tones via the
+    // Turn.Finished handler; Notification doesn't auto-play but the
+    // ▶ replay chip lets the user trigger it on demand so they can
+    // learn the notification's words too. User-typed bubbles stay
+    // unstyled since the user already knows what they typed.
+    val isMusicalKind = kind == ChatViewModel.TextKind.Reply ||
+        kind == ChatViewModel.TextKind.Update ||
+        kind == ChatViewModel.TextKind.Notification
+    val isMusicReply = musicMode && isMusicalKind
     val composedAnnotated = if (isMusicReply) {
         produceMusicAnnotated(displayText, bodyColor)
     } else {

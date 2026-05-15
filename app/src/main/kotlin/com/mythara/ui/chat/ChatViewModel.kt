@@ -546,20 +546,29 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { musicModeStore.setEnabled(enabled) }
     }
 
-    /** Replay the tone-encoded version of an assistant reply on demand
-     *  — the chat bubble's ▶ button. Encodes fresh each time so any
-     *  motif reshapes since the last play are reflected. Uses the
-     *  reply text as the playback source key so the bubble showing
-     *  this reply can subscribe to [musicNowPlaying] and light up
-     *  the matching word in lockstep with the audio. */
+    /** Replay the tone-encoded version of an assistant reply or
+     *  notification on demand — the chat bubble's ▶ button. Encodes
+     *  fresh each time so any motif reshapes since the last play are
+     *  reflected. Uses the reply text as the playback source key so
+     *  the bubble showing this reply can subscribe to
+     *  [musicNowPlaying] and light up the matching word in lockstep
+     *  with the audio.
+     *
+     *  Strips the `[notif]` prefix before encoding for Notification
+     *  bubbles — that prefix is internal-only routing metadata and
+     *  shouldn't become its own motif. The bubble's coloured text
+     *  also uses the stripped form so the source key (= the
+     *  displayed text) lines up with the bubble that the
+     *  highlight-glow needs to land on. */
     fun replayMusic(text: String) {
-        if (text.isBlank()) return
+        val stripped = text.removePrefix(com.mythara.agent.AgentLoop.NOTIF_PREFIX).trim()
+        if (stripped.isBlank()) return
         viewModelScope.launch {
             runCatching {
-                val motifs = musicEncoder.encode(text).map { it.motif }
+                val motifs = musicEncoder.encode(stripped).map { it.motif }
                     .filter { it.notes.isNotEmpty() }
                 if (motifs.isNotEmpty()) {
-                    musicToneEngine.play(motifs, sourceKey = text)
+                    musicToneEngine.play(motifs, sourceKey = stripped)
                 }
             }
         }
