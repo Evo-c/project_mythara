@@ -12,10 +12,17 @@
     <!-- Short haptic when a fresh Mythara agent message arrives. -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Heart-rate sensor sampling + the foreground service hosting it.
-         BODY_SENSORS gates the sensor read; HIGH_SAMPLING_RATE_SENSORS
-         (install-time, no prompt) satisfies the API 34+ "health" FGS
-         type's "any of" permission requirement. -->
+         BODY_SENSORS gates the legacy SensorManager.TYPE_HEART_RATE
+         path. android.permission.health.READ_HEART_RATE is the new
+         Wear OS 5+ permission required by Wear Health Services'
+         MeasureClient — without it WHS_PermissionPolicy throws a
+         SecurityException at registerMeasureCallback time and no HR
+         readings are ever delivered (observed on Pixel Watch 4 in
+         logcat). HIGH_SAMPLING_RATE_SENSORS (install-time, no prompt)
+         satisfies the API 34+ "health" FGS type's "any of" permission
+         requirement. -->
     <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />

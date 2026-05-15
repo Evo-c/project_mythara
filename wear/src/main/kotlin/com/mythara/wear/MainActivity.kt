@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
-import android.os.Build
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -109,22 +108,24 @@ private const val SHAKE_DEBOUNCE_MS = 2_500L
  */
 class MainActivity : ComponentActivity() {
 
-    /** Runtime permission launcher for BODY_SENSORS — required so
-     *  Samsung's permission UI lists Mythara as a body-sensors client.
-     *  Without an explicit runtime grant, `dumpsys` reports the
-     *  permission as granted (because it's auto-granted on older
-     *  targetSdk paths) but Samsung silently refuses to deliver HR
-     *  callbacks via Health Services. */
+    /** Runtime permission launcher for BODY_SENSORS. Stays here for
+     *  the rare case where the user has actively denied / never
+     *  accepted at install — but [onResume] only fires it once per
+     *  activity-lifetime to avoid re-prompting in a loop if the user
+     *  dismisses. */
     private val sensorPermLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             Log.d("Mythara/MainActivity", "BODY_SENSORS grant result: $granted")
             if (granted) {
-                // Start (or re-start) the HR service now that the
-                // grant is real — re-register the Health Services
-                // callback so it actually fires.
                 HeartRateService.start(this)
             }
         }
+
+    /** Set to true the first time onResume launches the BODY_SENSORS
+     *  prompt this activity-lifetime, so a "denied" outcome doesn't
+     *  re-launch the prompt on every subsequent resume — that would
+     *  loop the system permission UI forever. */
+    private var sensorPromptShown: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -132,34 +133,11 @@ class MainActivity : ComponentActivity() {
         // One UI Watch doesn't reliably honour the manifest attribute
         // alone, so the screen would flip on wrist movement.
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        // First-launch repair: BODY_SENSORS was install-time granted
-        // on this build (granted=true in dumpsys) but the user-facing
-        // Wear OS permission UI doesn't list us — and Samsung silently
-        // blocks Health Services HR delivery for apps that haven't
-        // gone through the runtime grant flow. Revoke once on first
-        // launch so the next process-kill → relaunch hits the explicit
-        // prompt path. The SharedPref flag stops us doing this on
-        // every subsequent open.
-        repairBodySensorsGrantOnce()
         setContent {
             MaterialTheme {
                 Scaffold {
                     AppRoot()
                 }
-            }
-        }
-    }
-
-    private fun repairBodySensorsGrantOnce() {
-        val prefs = getSharedPreferences("mythara_wear_prefs", Context.MODE_PRIVATE)
-        if (prefs.getBoolean("body_sensors_repaired_v1", false)) return
-        prefs.edit().putBoolean("body_sensors_repaired_v1", true).apply()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            try {
-                Log.d("Mythara/MainActivity", "revoking BODY_SENSORS on kill — will re-prompt next launch")
-                revokeSelfPermissionsOnKill(listOf(Manifest.permission.BODY_SENSORS))
-            } catch (e: Exception) {
-                Log.w("Mythara/MainActivity", "revoke BODY_SENSORS failed: ${e.message}")
             }
         }
     }
@@ -171,18 +149,19 @@ class MainActivity : ComponentActivity() {
         // startForegroundService() from background contexts, and a
         // Compose LaunchedEffect can fire before the activity resumes.
         //
-        // BODY_SENSORS is a runtime permission on Wear OS; if we
-        // haven't been through the actual grant flow Samsung will
-        // silently refuse Health Services HR callbacks even when
-        // the install-time grant says `granted=true`. Always prompt
-        // if not granted; only start the FGS once we have it.
+        // Only prompt for BODY_SENSORS once per activity-lifetime: if
+        // the user dismisses the system prompt, onResume re-fires
+        // immediately and a prompt-on-every-resume would loop the
+        // permission UI forever — what was happening on the Pixel
+        // Watch's freshly-installed Mythara.
         if (ContextCompat.checkSelfPermission(
                 this, Manifest.permission.BODY_SENSORS,
             ) == PackageManager.PERMISSION_GRANTED
         ) {
             HeartRateService.start(this)
-        } else {
-            Log.d("Mythara/MainActivity", "BODY_SENSORS not granted — prompting")
+        } else if (!sensorPromptShown) {
+            sensorPromptShown = true
+            Log.d("Mythara/MainActivity", "BODY_SENSORS not granted — prompting (one-shot)")
             sensorPermLauncher.launch(Manifest.permission.BODY_SENSORS)
         }
     }
