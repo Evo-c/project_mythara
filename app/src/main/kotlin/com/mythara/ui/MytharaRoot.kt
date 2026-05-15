@@ -155,6 +155,12 @@ fun MytharaRoot(
                                     onOpenFace = { nav.navigate(Routes.Face) },
                                     onOpenAboutMe = { nav.navigate(Routes.AboutMe) },
                                     onOpenInsights = { nav.navigate(Routes.Insights) },
+                                    onOpenMusicVocab = { nav.navigate(Routes.MusicVocab) },
+                                )
+                            }
+                            composable(Routes.MusicVocab) {
+                                com.mythara.ui.music.MusicVocabularyScreen(
+                                    onBack = { nav.popBackStack() },
                                 )
                             }
                             composable(Routes.Face) {
@@ -231,4 +237,5 @@ object Routes {
     const val Notes = "notes"
     const val People = "people"
     const val Face = "face"
+    const val MusicVocab = "music-vocab"
 }

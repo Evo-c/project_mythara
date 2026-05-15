@@ -103,6 +103,11 @@ fun ChatScreen(
     onOpenAboutMe: (() -> Unit)? = null,
     /** Opens the relationship-graph Insights screen. Null hides the menu entry. */
     onOpenInsights: (() -> Unit)? = null,
+    /** Opens the Music Mode vocabulary inspector. Shown in the menu
+     *  only when the music-mode toggle is on (no point showing the
+     *  user a vocabulary surface when they haven't opted in to the
+     *  feature). Null hides the entry entirely. */
+    onOpenMusicVocab: (() -> Unit)? = null,
     vm: ChatViewModel = hiltViewModel(),
 ) {
     val ui by vm.ui.collectAsState()
@@ -390,6 +395,9 @@ fun ChatScreen(
             onOpenFace = onOpenFace,
             onOpenAboutMe = onOpenAboutMe,
             onOpenInsights = onOpenInsights,
+            // Vocabulary entry only when music mode is on AND the
+            // host wired a callback. No-op-friendly otherwise.
+            onOpenMusicVocab = if (ui.musicMode) onOpenMusicVocab else null,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(insets)
@@ -436,6 +444,7 @@ private fun ChatMenuFab(
     onOpenFace: (() -> Unit)? = null,
     onOpenAboutMe: (() -> Unit)? = null,
     onOpenInsights: (() -> Unit)? = null,
+    onOpenMusicVocab: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -489,6 +498,12 @@ private fun ChatMenuFab(
                 ChatMenuItem("${Glyph.DiamondFilled} insights", MytharaColors.Bok, MytharaColors.Bok) {
                     expanded = false
                     onOpenInsights()
+                }
+            }
+            if (onOpenMusicVocab != null) {
+                ChatMenuItem("♪ vocabulary", MytharaColors.Charple, MytharaColors.Charple) {
+                    expanded = false
+                    onOpenMusicVocab()
                 }
             }
             ChatMenuItem("${Glyph.DiamondFilled} people", MytharaColors.Charple, MytharaColors.Charple) {
