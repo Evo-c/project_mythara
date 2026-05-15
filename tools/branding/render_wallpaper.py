@@ -285,6 +285,7 @@ def render_silhouette(
     target_y_top: int,
     max_alpha: int = 70,
     target_height_frac: float = 0.62,
+    vertically_center: bool = False,
 ) -> None:
     """
     Background-remove `source_path`, tint the result light purple, and
@@ -355,7 +356,13 @@ def render_silhouette(
     tinted = tinted.resize((new_w, new_h), Image.LANCZOS)
 
     paste_x = (canvas_w - new_w) // 2
-    paste_y = target_y_top
+    if vertically_center:
+        # Override the requested top-y — centre the rendered figure
+        # vertically in the canvas so it reads as a guardian behind
+        # whatever overlays it (rose / wordmark).
+        paste_y = (canvas_h - new_h) // 2
+    else:
+        paste_y = target_y_top
     # Caller is responsible for ensuring `img` is RGBA. main() does
     # this once after rendering the gradient.
     img.alpha_composite(tinted, (paste_x, paste_y))
@@ -436,14 +443,34 @@ def render_wordmark(draw: ImageDraw.ImageDraw, canvas_w: int, rose_bottom_y: flo
     draw.text((v_x, v_y), version, font=version_font, fill=CYAN)
 
     # ── Backronym tagline ───────────────────────────────────────────
+    # Per-char rendering so we can highlight the seven M-Y-T-H-A-R-A
+    # letters that anchor the acronym. Highlighted chars use the BOLD
+    # JetBrains Mono variant in cyan (matches the "1.0" stamp and the
+    # rose's hexagon nucleus); the surrounding lowercase + punctuation
+    # render in muted lavender at the regular weight. Both variants
+    # are the same point-size so the monospace baseline stays clean —
+    # no mid-line shifts.
     subtitle_font = ImageFont.truetype(str(FONT_REG), 30)
+    subtitle_bold = ImageFont.truetype(str(FONT_BOLD), 30)
     subtitle = "Mind-Yoked Tonal-Haptic Adaptive Resonant Assistant"
-    s_bbox = subtitle_font.getbbox(subtitle)
-    s_w = s_bbox[2] - s_bbox[0]
-    s_x = (canvas_w - s_w) // 2 - s_bbox[0]
+    # JetBrains Mono is monospaced, so any glyph's advance width
+    # equals every glyph's advance width — measure once with "M".
+    char_advance = subtitle_font.getbbox("M")[2] - subtitle_font.getbbox("M")[0]
+    s_w = char_advance * len(subtitle)
+    s_x = (canvas_w - s_w) // 2
     v_ascent, _ = version_font.getmetrics()
     s_y = v_y + v_ascent + 32
-    draw.text((s_x, s_y), subtitle, font=subtitle_font, fill=SUBTITLE_COLOR)
+    cursor_x = s_x
+    for i, ch in enumerate(subtitle):
+        # An "acronym anchor" is a capital letter that sits at the
+        # start of a word (after a space or hyphen, or at index 0).
+        is_word_start = i == 0 or subtitle[i - 1] in (" ", "-")
+        if is_word_start and ch.isupper():
+            font, fill = subtitle_bold, CYAN
+        else:
+            font, fill = subtitle_font, SUBTITLE_COLOR
+        draw.text((cursor_x, s_y), ch, font=font, fill=fill)
+        cursor_x += char_advance
 
     # Subtitle baseline + descent ≈ wordmark block bottom.
     s_ascent, s_descent = subtitle_font.getmetrics()
@@ -477,17 +504,20 @@ def main() -> None:
     #   no character → centre-biased rose with the wordmark sitting
     #                  directly beneath it (the original "splash"
     #                  composition, lots of breathing room)
-    #   character    → "guardian" composition: rose floats above the
-    #                  warrior's headdress in the upper sixth of the
-    #                  canvas, the silhouette fills the middle band,
-    #                  and the wordmark anchors to the bottom margin.
+    #   character    → "amulet" composition: silhouette fills the
+    #                  canvas as a guardian backdrop; the rose sits
+    #                  at the visual centre over her chest like a
+    #                  brooch, with the wordmark + tagline directly
+    #                  below it. The cy offset compensates for the
+    #                  wordmark block hanging beneath the rose so
+    #                  the *combined* mark+text block is what reads
+    #                  as centred, not the rose alone.
     has_silhouette = bool(args.character)
     if has_silhouette:
-        # Rose lifted near the top so it reads as a halo above the
-        # warrior's headdress. Scaled slightly smaller so it doesn't
-        # crowd the figure.
         scale = 6.5 * (w / 1280)
-        cy = h * 0.16
+        # Pull the rose above true-centre by half the wordmark block
+        # height so rose + wordmark together centre on canvas middle.
+        cy = h / 2 - _wordmark_block_height() / 2
     else:
         # Original splash layout.
         scale = 8 * (w / 1280)
@@ -509,33 +539,33 @@ def main() -> None:
         render_node_mesh(img, seed=args.mesh_seed)
 
     if has_silhouette:
-        # Wordmark block pinned to the bottom of the canvas with a
-        # small bottom margin. Compute its top-y so we know how much
-        # vertical space the silhouette can claim.
-        bottom_margin = int(h * 0.05)
-        wm_block_h = _wordmark_block_height()
-        wordmark_top_y = h - bottom_margin - wm_block_h
-        # mythara_y is the *top* of the MYTHARA glyph block; the
-        # render_wordmark helper expects rose_bottom_y + 70 to land
-        # there, so derive the synthetic rose_bottom we'll feed it.
-        synthetic_rose_bottom = wordmark_top_y - 70
-
-        # Silhouette spans rose-bottom → wordmark-top with margins.
-        rose_bottom_y = cy + 30 * scale
-        silhouette_top = int(rose_bottom_y + 30)
-        silhouette_avail_h = wordmark_top_y - silhouette_top - 30
-        silhouette_frac = max(0.0, silhouette_avail_h / h)
+        # Silhouette is a full-canvas backdrop, vertically centred
+        # so the warrior occupies the middle band of the canvas. The
+        # rose + wordmark then overlay her at canvas-middle (the cy
+        # above already centres the rose+wordmark *block* on canvas-
+        # middle), so the brand mark + text read as a brooch sitting
+        # at her chest.
+        margin = int(h * 0.04)
+        silhouette_avail_h = h - 2 * margin
+        silhouette_frac = silhouette_avail_h / h
         render_silhouette(
             img,
             Path(args.character).expanduser(),
-            target_y_top=silhouette_top,
+            target_y_top=margin,           # ignored when vertically_center=True
             max_alpha=args.silhouette_alpha,
             target_height_frac=silhouette_frac,
+            vertically_center=True,
         )
 
+        # Rose + text rendered together, both anchored to the
+        # canvas-centred rose position computed above. They move as
+        # a single visual block, so wordmark always hangs directly
+        # off the rose's bottom edge regardless of which layout
+        # variant is in play.
+        rose_bottom_y = cy + 30 * scale
         draw = ImageDraw.Draw(img)
         render_rose(draw, cx, cy, scale)
-        render_wordmark(draw, w, synthetic_rose_bottom)
+        render_wordmark(draw, w, rose_bottom_y)
     else:
         # Original splash layout — wordmark hangs directly off the
         # rose's bottom edge, no silhouette.
