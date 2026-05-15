@@ -49,6 +49,11 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
+    <!-- Lets the WallpaperApplyReceiver drop a Mythara branding image
+         onto the device's home + lockscreen via adb broadcast. Install-
+         time permission, no runtime grant required. -->
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+
     <!-- Health Connect read permissions for the HealthLearningWorker.
          Each type is a separate runtime permission requested via the
          Health Connect SDK's PermissionController. Off by default;
@@ -424,6 +429,23 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="com.mythara.calendar.PRE_ANNOUNCE_FIRE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Wallpaper applier — adb-triggerable bitmap-to-wallpaper
+             handoff. Lets the operator set the Mythara branding image
+             as home + lockscreen wallpaper without going through the
+             system picker. Action `com.mythara.action.APPLY_WALLPAPER`
+             with string extras `path` (filesystem path or content://
+             URI) and `target` (`home` / `lock` / `both`, default
+             `both`). See WallpaperApplyReceiver.kt for the exact adb
+             command. Exported so adb can reach it without launching
+             the app. -->
+        <receiver
+            android:name=".services.WallpaperApplyReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.mythara.action.APPLY_WALLPAPER" />
             </intent-filter>
         </receiver>
 
