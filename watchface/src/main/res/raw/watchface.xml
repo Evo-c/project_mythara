@@ -540,18 +540,127 @@
 
         <!-- ============ ALWAYS-ON — two dot-matrix lines ============ -->
         <!-- Hidden interactive (alpha 0); shown in ambient. Power-save
-             display is just MYTHARA on one line and the device time on
-             the line below, both dot-matrix, centred. Minimal lit
-             pixels for burn-in / battery. -->
+             display is MYTHARA on one line and the device time on the
+             line below, both dot-matrix, centred. A pair of rolodex-
+             style glyph blocks flank MYTHARA, each cycling through 4
+             colour/symbol variants every minute (the only animation
+             AOD allows — the surface refreshes once per minute).
+             Minimal extra lit pixels for burn-in / battery. -->
         <Group x="0" y="0" width="450" height="450" name="ambient" alpha="0">
             <Variant mode="AMBIENT" target="alpha" value="255" />
 
-            <!-- MYTHARA wordmark — top line, dot-matrix, centred -->
+            <!-- MYTHARA wordmark — top line, dot-matrix, centred.
+                 Colour and font intentionally unchanged. -->
             <PartText x="0" y="172" width="450" height="50">
                 <Text align="CENTER">
                     <BitmapFont family="dotmatrix" size="30" color="#ff9be8c8"><![CDATA[MYTHARA]]></BitmapFont>
                 </Text>
             </PartText>
+
+            <!-- Left rolodex glyphs — 3 chars, right-aligned ending just
+                 before MYTHARA's left edge. Cycles every minute through
+                 4 (glyph, colour) variants stepping the linear-gradient
+                 palette. -->
+            <Condition>
+                <Expressions>
+                    <Expression name="rolo_l_a">([MINUTE] % 4) == 0</Expression>
+                </Expressions>
+                <Compare expression="rolo_l_a">
+                    <PartText x="30" y="182" width="90" height="40">
+                        <Text align="END">
+                            <Font family="jetbrains_mono_regular" size="22" color="#ff68ffd6"><![CDATA[▓▒░]]></Font>
+                        </Text>
+                    </PartText>
+                </Compare>
+            </Condition>
+            <Condition>
+                <Expressions>
+                    <Expression name="rolo_l_b">([MINUTE] % 4) == 1</Expression>
+                </Expressions>
+                <Compare expression="rolo_l_b">
+                    <PartText x="30" y="182" width="90" height="40">
+                        <Text align="END">
+                            <Font family="jetbrains_mono_regular" size="22" color="#ff3d9cff"><![CDATA[◆◇◈]]></Font>
+                        </Text>
+                    </PartText>
+                </Compare>
+            </Condition>
+            <Condition>
+                <Expressions>
+                    <Expression name="rolo_l_c">([MINUTE] % 4) == 2</Expression>
+                </Expressions>
+                <Compare expression="rolo_l_c">
+                    <PartText x="30" y="182" width="90" height="40">
+                        <Text align="END">
+                            <Font family="jetbrains_mono_regular" size="22" color="#ffeb4268"><![CDATA[▶▷▸]]></Font>
+                        </Text>
+                    </PartText>
+                </Compare>
+            </Condition>
+            <Condition>
+                <Expressions>
+                    <Expression name="rolo_l_d">([MINUTE] % 4) == 3</Expression>
+                </Expressions>
+                <Compare expression="rolo_l_d">
+                    <PartText x="30" y="182" width="90" height="40">
+                        <Text align="END">
+                            <Font family="jetbrains_mono_regular" size="22" color="#ffffb000"><![CDATA[▣▢▤]]></Font>
+                        </Text>
+                    </PartText>
+                </Compare>
+            </Condition>
+
+            <!-- Right rolodex glyphs — mirror of the left, offset by 2
+                 in the cycle so the two sides aren't always the same
+                 colour at the same time (more rolodex-y). -->
+            <Condition>
+                <Expressions>
+                    <Expression name="rolo_r_a">(([MINUTE] + 2) % 4) == 0</Expression>
+                </Expressions>
+                <Compare expression="rolo_r_a">
+                    <PartText x="330" y="182" width="90" height="40">
+                        <Text align="START">
+                            <Font family="jetbrains_mono_regular" size="22" color="#ff68ffd6"><![CDATA[░▒▓]]></Font>
+                        </Text>
+                    </PartText>
+                </Compare>
+            </Condition>
+            <Condition>
+                <Expressions>
+                    <Expression name="rolo_r_b">(([MINUTE] + 2) % 4) == 1</Expression>
+                </Expressions>
+                <Compare expression="rolo_r_b">
+                    <PartText x="330" y="182" width="90" height="40">
+                        <Text align="START">
+                            <Font family="jetbrains_mono_regular" size="22" color="#ff3d9cff"><![CDATA[◈◇◆]]></Font>
+                        </Text>
+                    </PartText>
+                </Compare>
+            </Condition>
+            <Condition>
+                <Expressions>
+                    <Expression name="rolo_r_c">(([MINUTE] + 2) % 4) == 2</Expression>
+                </Expressions>
+                <Compare expression="rolo_r_c">
+                    <PartText x="330" y="182" width="90" height="40">
+                        <Text align="START">
+                            <Font family="jetbrains_mono_regular" size="22" color="#ffeb4268"><![CDATA[◂◁◀]]></Font>
+                        </Text>
+                    </PartText>
+                </Compare>
+            </Condition>
+            <Condition>
+                <Expressions>
+                    <Expression name="rolo_r_d">(([MINUTE] + 2) % 4) == 3</Expression>
+                </Expressions>
+                <Compare expression="rolo_r_d">
+                    <PartText x="330" y="182" width="90" height="40">
+                        <Text align="START">
+                            <Font family="jetbrains_mono_regular" size="22" color="#ffffb000"><![CDATA[▤▢▣]]></Font>
+                        </Text>
+                    </PartText>
+                </Compare>
+            </Condition>
 
             <!-- device-local current time — line below, dot-matrix, centred -->
             <DigitalClock x="0" y="228" width="450" height="58">
