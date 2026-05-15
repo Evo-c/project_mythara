@@ -38,7 +38,10 @@ class ReminderComplicationService : ComplicationDataSourceService() {
                 System.currentTimeMillis(),
                 DateUtils.MINUTE_IN_MILLIS,
             ).toString()
-            "${rem.title} · $whenLabel"
+            // Lead with the live countdown so a glance at the wrist
+            // answers "how soon" first; the title carries the
+            // "what" after the dash.
+            "$whenLabel - ${rem.title}"
         } else {
             "No reminders"
         }

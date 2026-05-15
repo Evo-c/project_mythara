@@ -402,11 +402,25 @@
                 defaultSystemProvider="WATCH_BATTERY"
                 defaultSystemProviderType="SHORT_TEXT" />
             <Complication type="SHORT_TEXT">
+                <!-- Interactive: marquee scroll. -->
                 <PartText x="0" y="0" width="900" height="28">
                     <Variant mode="AMBIENT" target="alpha" value="0" />
                     <Transform target="x" value="0 - (([SECOND] * 8) % 700)" />
                     <Text align="START" maxLines="1">
                         <Font family="jetbrains_mono_regular" size="15" color="#ffffb000">
+                            <Template><![CDATA[⏰ %s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
+                        </Font>
+                    </Text>
+                </PartText>
+                <!-- AOD: static, centered, end-ellipsis. Same reminder
+                     text the watch's ReminderComplicationService is
+                     pushing — formatted "In Nm - title" — just truncated
+                     to fit the slot width without animation. Smaller
+                     dimmer font for AOD burn-in / battery. -->
+                <PartText x="0" y="0" width="340" height="28" alpha="0">
+                    <Variant mode="AMBIENT" target="alpha" value="255" />
+                    <Text align="CENTER" maxLines="1" ellipsize="END">
+                        <Font family="jetbrains_mono_regular" size="13" color="#ff9be8c8">
                             <Template><![CDATA[⏰ %s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                         </Font>
                     </Text>
@@ -418,6 +432,14 @@
                     <Transform target="x" value="0 - (([SECOND] * 8) % 700)" />
                     <Text align="START" maxLines="1">
                         <Font family="jetbrains_mono_regular" size="15" color="#ffffb000">
+                            <Template><![CDATA[⏰ %s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
+                        </Font>
+                    </Text>
+                </PartText>
+                <PartText x="0" y="0" width="340" height="28" alpha="0">
+                    <Variant mode="AMBIENT" target="alpha" value="255" />
+                    <Text align="CENTER" maxLines="1" ellipsize="END">
+                        <Font family="jetbrains_mono_regular" size="13" color="#ff9be8c8">
                             <Template><![CDATA[⏰ %s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                         </Font>
                     </Text>

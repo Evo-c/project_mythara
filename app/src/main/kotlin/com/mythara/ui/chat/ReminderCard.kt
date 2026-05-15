@@ -167,10 +167,13 @@ private fun formatScheduledFor(ms: Long, now: Long = System.currentTimeMillis())
         else -> SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
     }
     val whenStr = fmt.format(Date(ms))
+    // Lead with the live countdown so the glance order is
+    // "how soon" → "exact clock time"; the title sits below on the
+    // next line of the card.
     return when {
-        diff > 60_000 -> "in ${humanDelta(diff)} · $whenStr"
-        diff > -60_000 -> "now · $whenStr"
-        else -> "$whenStr (${humanDelta(-diff)} ago)"
+        diff > 60_000 -> "In ${humanDelta(diff)} · $whenStr"
+        diff > -60_000 -> "Now · $whenStr"
+        else -> "${humanDelta(-diff)} ago · $whenStr"
     }
 }
 
