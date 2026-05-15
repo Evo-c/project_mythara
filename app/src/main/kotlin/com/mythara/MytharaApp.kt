@@ -23,7 +23,6 @@ import com.mythara.persona.PersonaScheduler
 import com.mythara.persona.PersonaSettings
 import com.mythara.voice.QuickTalkNotification
 import com.mythara.voice.QuickTalkSettings
-import com.mythara.wear.WatchAgentMessageRelay
 import com.mythara.wear.WatchClusterDataPusher
 import com.mythara.wear.WatchPhoneStatusRelay
 import dagger.hilt.android.HiltAndroidApp
@@ -67,7 +66,7 @@ class MytharaApp : Application(), Configuration.Provider {
     @Inject lateinit var reminderAlarmScheduler: ReminderAlarmScheduler
     @Inject lateinit var healthLearningScheduler: HealthLearningScheduler
     @Inject lateinit var hrCorrelationScheduler: HrCorrelationScheduler
-    @Inject lateinit var watchAgentMessageRelay: WatchAgentMessageRelay
+    @Inject lateinit var watchNextTaskRelay: com.mythara.wear.WatchNextTaskRelay
     @Inject lateinit var watchPhoneStatusRelay: WatchPhoneStatusRelay
     @Inject lateinit var watchClusterDataPusher: WatchClusterDataPusher
 
@@ -161,10 +160,12 @@ class MytharaApp : Application(), Configuration.Provider {
         // correlate with HR spikes" becomes a learned relationship
         // signal that flavors auto-replies + persona insights.
         hrCorrelationScheduler.start()
-        // Watch-face agent-message relay — mirrors the latest Mythara
-        // agent chat message to the Tactical watch face's live line
-        // over the Data Layer, so the wrist stays in sync with the app.
-        watchAgentMessageRelay.start()
+        // Watch-face NEXT-TASK relay — replaces the old "last agent
+        // message" mirror with a forward-looking card. The wrist now
+        // always shows whichever scheduled task is coming up next,
+        // re-evaluated every minute as time moves forward AND on
+        // every task DB change (new schedule, cancel, fire).
+        watchNextTaskRelay.start()
         // Watch-face phone-status relay — publishes the phone's battery
         // level to the watch (WFF can't read the peer device's battery).
         watchPhoneStatusRelay.start()
