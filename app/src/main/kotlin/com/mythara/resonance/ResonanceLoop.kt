@@ -138,9 +138,18 @@ class ResonanceLoop @Inject constructor(
         Log.d(TAG, "tick snap=$snap phase=${_phase.value}")
 
         // Stop if biometrics have gone stale (watch BT drop) — never
-        // glide on a stale arousal value.
-        if (snap.confidence < STALE_CONFIDENCE_FLOOR && snap.liveHrAvgBpm == null) {
-            Log.d(TAG, "biometrics stale — initiating stop")
+        // glide on a stale arousal value. Skip this check during the
+        // grace window: on Galaxy Watch the HR source is the
+        // Health-Connect poller, which needs Samsung Health to write
+        // its first batch (~30–60 s typical, can be longer). Without
+        // a grace window we'd auto-stop every session before HR ever
+        // arrives.
+        val sessionAgeMs = System.currentTimeMillis() - startedAtMs
+        if (sessionAgeMs > STALE_GRACE_MS &&
+            snap.confidence < STALE_CONFIDENCE_FLOOR &&
+            snap.liveHrAvgBpm == null
+        ) {
+            Log.d(TAG, "biometrics stale — initiating stop (age=${sessionAgeMs}ms)")
             stopRequested = true
             return
         }
@@ -200,6 +209,10 @@ class ResonanceLoop @Inject constructor(
         private const val STABLE_POLLS_FOR_DEESCALATE = 3           // ~90s in-band → de-escalate
         private const val ARROUSAL_TOLERANCE = 0.20f
         private const val STALE_CONFIDENCE_FLOOR = 0.15f
+
+        /** Grace window after session start during which the
+         *  stale-biometrics check is suppressed — see tick(). */
+        private const val STALE_GRACE_MS = 90_000L
         private const val DEESCALATE_START_VOLUME = 0.30f
         private const val DEESCALATE_STEP = 0.04f
         private const val DEESCALATE_FLOOR = 0.18f

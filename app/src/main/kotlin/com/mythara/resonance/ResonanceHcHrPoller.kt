@@ -97,14 +97,16 @@ class ResonanceHcHrPoller @Inject constructor(
 
     private suspend fun pollOnce() {
         runCatching {
-            if (HealthConnectClient.getSdkStatus(ctx) != HealthConnectClient.SDK_AVAILABLE) {
-                logOnce("Health Connect SDK not available — skipping HR poll")
+            val sdkStatus = HealthConnectClient.getSdkStatus(ctx)
+            if (sdkStatus != HealthConnectClient.SDK_AVAILABLE) {
+                Log.d(TAG, "poll: HC SDK not available (status=$sdkStatus) — skipping")
                 return
             }
             val client = HealthConnectClient.getOrCreate(ctx)
             val granted = client.permissionController.getGrantedPermissions()
-            if (HealthPermission.getReadPermission(HeartRateRecord::class) !in granted) {
-                logOnce("HR read permission not granted in Health Connect — skipping")
+            val hrPerm = HealthPermission.getReadPermission(HeartRateRecord::class)
+            if (hrPerm !in granted) {
+                Log.d(TAG, "poll: HR read perm NOT granted (granted=$granted)")
                 return
             }
 
@@ -126,7 +128,13 @@ class ResonanceHcHrPoller @Inject constructor(
             // Only push samples newer than the highest one we've seen
             // so far (strict >, not >=, to dedupe on the boundary).
             val fresh = flat.filter { it.first > lastPushedTsMs }
-            if (fresh.isEmpty()) return
+            if (fresh.isEmpty()) {
+                Log.d(
+                    TAG,
+                    "poll: window=${since}..$now, ${records.size} record(s) → ${flat.size} sample(s), 0 new",
+                )
+                return
+            }
 
             for ((tsMs, bpm) in fresh) {
                 hrStore.push(bpm, tsMs)
@@ -139,7 +147,7 @@ class ResonanceHcHrPoller @Inject constructor(
                     "(session total $samplesPushed)",
             )
         }.onFailure {
-            logOnce("HC HR poll failed: ${it.message}")
+            Log.w(TAG, "HC HR poll failed: ${it.message}", it)
         }
     }
 
