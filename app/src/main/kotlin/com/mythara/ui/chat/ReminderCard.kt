@@ -16,12 +16,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import com.mythara.reminders.ReminderAlarmReceiver
 import com.mythara.reminders.ReminderAlarmScheduler
 import com.mythara.ui.theme.Glyph
@@ -45,7 +49,17 @@ import java.util.Locale
 @Composable
 fun ReminderCard(item: ChatViewModel.ChatItem.ReminderCard) {
     val ctx = LocalContext.current
-    val now = System.currentTimeMillis()
+    // Live wall-clock tick — re-renders the card every minute so the
+    // "in 14m" countdown actually counts down on screen instead of
+    // freezing at the value computed when the card was first composed.
+    // Keyed on the task id so different cards in the timeline tick
+    // independently without overlap.
+    val now by produceState(initialValue = System.currentTimeMillis(), key1 = item.id) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(60_000L)
+        }
+    }
     val isLive = item.scheduledForMs <= now && !item.terminal
     val borderColor = when {
         item.terminal -> MytharaColors.SurfaceHigh
@@ -56,6 +70,9 @@ fun ReminderCard(item: ChatViewModel.ChatItem.ReminderCard) {
         item.terminal -> if (item.status == "DONE") "${Glyph.Check} done" else "${Glyph.Cross} ${item.status.lowercase()}"
         isLive -> "${Glyph.Dot} reminder"
         else -> "${Glyph.CircleOutline} scheduled"
+    }
+    val whenLabel = remember(item.scheduledForMs, now) {
+        formatScheduledFor(item.scheduledForMs, now)
     }
 
     Column(
@@ -75,7 +92,7 @@ fun ReminderCard(item: ChatViewModel.ChatItem.ReminderCard) {
             )
             Spacer(Modifier.padding(end = 8.dp))
             Text(
-                text = formatScheduledFor(item.scheduledForMs),
+                text = whenLabel,
                 color = MytharaColors.FgDim,
                 style = MaterialTheme.typography.labelSmall,
             )
@@ -141,8 +158,7 @@ private fun fireAction(ctx: Context, taskId: String, kind: String) {
     ctx.sendBroadcast(intent)
 }
 
-private fun formatScheduledFor(ms: Long): String {
-    val now = System.currentTimeMillis()
+private fun formatScheduledFor(ms: Long, now: Long = System.currentTimeMillis()): String {
     val diff = ms - now
     val abs = Math.abs(diff)
     val fmt = when {

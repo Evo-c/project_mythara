@@ -402,9 +402,10 @@
                 defaultSystemProvider="WATCH_BATTERY"
                 defaultSystemProviderType="SHORT_TEXT" />
             <Complication type="SHORT_TEXT">
-                <PartText x="0" y="0" width="340" height="28">
+                <PartText x="0" y="0" width="900" height="28">
                     <Variant mode="AMBIENT" target="alpha" value="0" />
-                    <Text align="CENTER" maxLines="1">
+                    <Transform target="x" value="0 - (([SECOND] * 8) % 700)" />
+                    <Text align="START" maxLines="1">
                         <Font family="jetbrains_mono_regular" size="15" color="#ffffb000">
                             <Template><![CDATA[⏰ %s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                         </Font>
@@ -412,9 +413,10 @@
                 </PartText>
             </Complication>
             <Complication type="LONG_TEXT">
-                <PartText x="0" y="0" width="340" height="28">
+                <PartText x="0" y="0" width="900" height="28">
                     <Variant mode="AMBIENT" target="alpha" value="0" />
-                    <Text align="CENTER" maxLines="1">
+                    <Transform target="x" value="0 - (([SECOND] * 8) % 700)" />
+                    <Text align="START" maxLines="1">
                         <Font family="jetbrains_mono_regular" size="15" color="#ffffb000">
                             <Template><![CDATA[⏰ %s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                         </Font>
