@@ -52,6 +52,26 @@ class WallpaperApplyReceiver : BroadcastReceiver() {
             return
         }
 
+        // Debug-only HR injection — lets the operator drive the live
+        // wallpaper's pulse rate from adb without needing the watch
+        // online + Health Connect populated. Fires the same sink the
+        // real ResonanceHrStore.push() does, so the rendered effect
+        // is identical to a real reading.
+        //   adb shell am broadcast \
+        //     -a com.mythara.action.APPLY_WALLPAPER \
+        //     -n com.mythara.debug/com.mythara.services.WallpaperApplyReceiver \
+        //     --es target test-hr --ei bpm 120
+        if (targetArg == "test-hr") {
+            val bpm = intent.getIntExtra(EXTRA_BPM, -1)
+            if (bpm <= 0) {
+                Log.w(TAG, "test-hr requires --ei bpm <int>")
+                return
+            }
+            com.mythara.branding.LiveWallpaperPulseSink.update(bpm)
+            Log.i(TAG, "test-hr injected bpm=$bpm into LiveWallpaperPulseSink")
+            return
+        }
+
         val pathArg = intent.getStringExtra(EXTRA_PATH)
         if (pathArg.isNullOrBlank()) {
             Log.w(TAG, "missing required extra '$EXTRA_PATH'")
@@ -133,5 +153,11 @@ class WallpaperApplyReceiver : BroadcastReceiver() {
         const val ACTION = "com.mythara.action.APPLY_WALLPAPER"
         const val EXTRA_PATH = "path"
         const val EXTRA_TARGET = "target"
+
+        /** `--ei bpm <int>` — used only when target=test-hr to inject
+         *  a synthetic heart-rate sample into the live wallpaper's
+         *  pulse sink, so the operator can verify the HR-driven
+         *  pulse rate end-to-end without the watch / Health Connect. */
+        const val EXTRA_BPM = "bpm"
     }
 }

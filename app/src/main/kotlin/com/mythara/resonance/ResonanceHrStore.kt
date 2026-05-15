@@ -1,6 +1,7 @@
 package com.mythara.resonance
 
 import android.util.Log
+import com.mythara.branding.LiveWallpaperPulseSink
 import com.mythara.memory.Tier
 import com.mythara.secret.observe.vault.LearningVault
 import kotlinx.coroutines.CoroutineScope
@@ -57,6 +58,11 @@ class ResonanceHrStore @Inject constructor(
             buffer.addLast(Sample(bpm, tsMillis))
             while (buffer.size > BUFFER_CAP) buffer.removeFirst()
         }
+        // Publish to the process-wide sink the live wallpaper reads
+        // from, so the rose's hexagon nucleus + the active "neuron"
+        // overlay nodes pulse in sync with the user's actual heart
+        // rate. Volatile field, no allocation, runs every push.
+        LiveWallpaperPulseSink.update(bpm)
     }
 
     /** Most recent valid sample, or null if none. */
