@@ -5,6 +5,9 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -45,6 +48,19 @@ class MainActivity : FragmentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Full-screen launcher mode — Mythara is the user's home
+        // launcher (HOME intent-filter on this activity), so it
+        // renders its own top status strip (MytharaStatusBar) and
+        // hides the system status bar entirely. The
+        // BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE means an edge-swipe
+        // from the top still surfaces system bars temporarily for
+        // notification access — important so the user can still
+        // pull down the system shade when they need it.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.statusBars())
         // Pixel Buds touch-and-hold (and any other "open the digital
         // assistant" gesture, e.g. squeeze-to-assist, swipe-up assist
         // gesture) delivers MainActivity an ACTION_ASSIST intent when

@@ -24,8 +24,11 @@ import com.mythara.ui.about.AboutScreen
 import com.mythara.ui.amulet.AMULET_SIZE_DP
 import com.mythara.ui.amulet.ConstellationSlot
 import com.mythara.ui.amulet.PopupAmulet
+import com.mythara.ui.amulet.QuickAction
+import com.mythara.ui.amulet.QuickActionIds
 import com.mythara.ui.amulet.RoseGeometry
 import com.mythara.ui.amulet.detectGlobalLongPress
+import com.mythara.ui.dashboard.DashboardHome
 import com.mythara.ui.auth.AuthGate
 import com.mythara.ui.auth.AuthViewModel
 import com.mythara.ui.chat.ChatScreen
@@ -34,6 +37,7 @@ import com.mythara.ui.fold.RoseBloomOverlay
 import com.mythara.ui.fold.rememberFoldPosture
 import com.mythara.ui.launcher.SpotlightDrawer
 import com.mythara.ui.permissions.PermissionsScreen
+import com.mythara.ui.system.MytharaStatusBar
 import com.mythara.ui.triage.NotificationTriageScreen
 import com.mythara.ui.usage.UsageScreen
 import com.mythara.ui.dashboard.DashboardLayout
@@ -249,6 +253,30 @@ fun MytharaRoot(
                             composable(Routes.Usage) {
                                 UsageScreen(onBack = { nav.popBackStack() })
                             }
+                            composable(Routes.Dashboard) {
+                                // Compact-mode Dashboard — the same
+                                // tile grid the tablet/foldable
+                                // [DashboardLayout] surfaces, but
+                                // standalone. Each tile maps to an
+                                // existing destination via this
+                                // single-pane NavController.
+                                DashboardHome(
+                                    onOpenTasks = { nav.navigate(Routes.Notes) },
+                                    onOpenTimeline = { nav.navigate(Routes.Notes) },
+                                    onOpenDevices = { nav.navigate(Routes.People) },
+                                    onOpenHr = { nav.navigate(Routes.Insights) },
+                                    onOpenHealth = { nav.navigate(Routes.Insights) },
+                                    onOpenSensors = { nav.navigate(Routes.Settings) },
+                                    onOpenSkills = { nav.navigate(Routes.Settings) },
+                                    onOpenAppDrawer = {
+                                        // Pop back to chat first so
+                                        // the amulet's spotlight
+                                        // sentinel can fire from a
+                                        // clean state.
+                                        nav.popBackStack(Routes.Chat, inclusive = false)
+                                    },
+                                )
+                            }
                         }
                     } else if (isTablet) {
                         DashboardLayout(
@@ -286,7 +314,7 @@ fun MytharaRoot(
                             // doesn't fit the NavHost route model.
                             ConstellationSlot(252f, "drawer", ROUTE_SPOTLIGHT, MytharaColors.Mustard),
                             ConstellationSlot(288f, "usage", Routes.Usage, MytharaColors.Mustard),
-                            ConstellationSlot(324f, "me", Routes.AboutMe, MytharaColors.Malibu),
+                            ConstellationSlot(324f, "dash", Routes.Dashboard, MytharaColors.Malibu),
                         )
                     }
 
@@ -294,10 +322,26 @@ fun MytharaRoot(
                     // active layout when the user has triggered a
                     // long-press; tap a chip to navigate, tap the
                     // central rose or the scrim to dismiss.
+                    // PTT-mode quick actions for the amulet's
+                    // second face (toggled from center-tap on the
+                    // rose). Same four tools as the inline composer
+                    // — mic / STT-mute / music mode / continuous
+                    // voice — surfaced thumb-reachable around the
+                    // rose so they're one tap from anywhere.
+                    val pttActions = remember {
+                        listOf(
+                            QuickAction(QuickActionIds.Mic, "🎤"),
+                            QuickAction(QuickActionIds.SttMute, "🤫"),
+                            QuickAction(QuickActionIds.MusicMode, "♪"),
+                            QuickAction(QuickActionIds.ContinuousVoice, "∞"),
+                        )
+                    }
+
                     amuletAnchor?.let { anchor ->
                         PopupAmulet(
                             anchorPx = anchor,
                             slots = slots,
+                            pttActions = pttActions,
                             amuletSizeDp = AMULET_SIZE_DP.value.toInt(),
                             onSlotTap = { slot ->
                                 amuletAnchor = null
@@ -309,7 +353,18 @@ fun MytharaRoot(
                                     }
                                 }
                             },
-                            onCenterTap = { amuletAnchor = null },
+                            onPttActionTap = { _ ->
+                                // Phase placeholder — the four
+                                // composer tools (mic / STT-mute /
+                                // music / continuous-voice) live in
+                                // ChatScreen's composer + the
+                                // wallpaper test broadcasts;
+                                // wiring through the amulet hub is
+                                // a follow-up. Dismiss for now so
+                                // the gesture path is end-to-end
+                                // testable.
+                                amuletAnchor = null
+                            },
                             onScrimTap = { amuletAnchor = null },
                         )
                     }
@@ -325,6 +380,17 @@ fun MytharaRoot(
                             onDismiss = { spotlightOpen = false },
                         )
                     }
+
+                    // Mythara's own status strip — drawn LAST in the
+                    // Box so it sits on TOP of every NavHost
+                    // destination + every overlay (popup amulet,
+                    // spotlight). The system status bar is hidden
+                    // by MainActivity's WindowInsetsController so
+                    // this 24dp strip replaces it, showing clock +
+                    // battery + charging indicator.
+                    MytharaStatusBar(
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
 
                     // Suppress unused warning — RoseGeometry is used
                     // by Constellation / Amulet / Bloom imports.
@@ -426,4 +492,8 @@ object Routes {
     const val Triage = "triage"
     /** MiniMax API usage / quota dashboard. */
     const val Usage = "usage"
+    /** Dashboard / command center — surfaced from the amulet as a
+     *  separate destination so users can reach the tile grid even
+     *  on compact phones (previously tablet/foldable-only). */
+    const val Dashboard = "dashboard"
 }

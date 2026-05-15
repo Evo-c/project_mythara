@@ -17,7 +17,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -55,16 +58,27 @@ import kotlin.math.sin
  * pulse + tint when shown — so the amulet keeps its identity as
  * "your physiological brand mark" even though it's transient.
  */
+/** Two faces of the popup amulet — see [PopupAmulet] doc. */
+enum class AmuletMode { Menu, Ptt }
+
 @Composable
 fun PopupAmulet(
     anchorPx: Offset,
     slots: List<ConstellationSlot>,
+    pttActions: List<QuickAction>,
     amuletSizeDp: Int,
     onSlotTap: (ConstellationSlot) -> Unit,
-    onCenterTap: () -> Unit,
+    onPttActionTap: (QuickAction) -> Unit,
     onScrimTap: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Center-tap toggles between Menu (nav constellation) and PTT
+    // (mic / music / agent functions). User asked: "second tap on
+    // the rose switches between menu and PTT functions". We start
+    // in Menu mode so the first thing the user sees is navigation
+    // — which is what 90% of long-presses are for. PTT is one
+    // extra tap away.
+    var mode by remember { mutableStateOf(AmuletMode.Menu) }
     val expansion = remember { Animatable(initialValue = 0f) }
     LaunchedEffect(Unit) {
         expansion.animateTo(
@@ -107,9 +121,40 @@ fun PopupAmulet(
                 ),
         )
 
-        // Constellation chips — fan 360° around the anchor.
-        slots.filter { it.visible }.forEach { slot ->
-            val r = slot.angleDeg * (PI / 180.0).toFloat()
+        // Chips that fan 360° around the anchor — drawn from
+        // either the constellation slots (Menu mode) or the PTT
+        // actions (Ptt mode). Same geometric layout for both, only
+        // the chip CONTENT changes — keeps the visual model
+        // predictable across modes.
+        val visibleChips: List<ChipPayload> = when (mode) {
+            AmuletMode.Menu -> slots.filter { it.visible }.map {
+                ChipPayload(
+                    angleDeg = it.angleDeg,
+                    label = it.label,
+                    accent = it.accent,
+                    glyph = it.label.firstOrNull()?.uppercaseChar()?.toString().orEmpty(),
+                    onTap = { onSlotTap(it) },
+                )
+            }
+            AmuletMode.Ptt -> {
+                // PTT actions don't carry a fixed angle; spread
+                // them evenly around the circle starting at 12 o'clock.
+                val n = pttActions.size.coerceAtLeast(1)
+                pttActions.mapIndexed { i, action ->
+                    val angle = (i * 360f) / n
+                    ChipPayload(
+                        angleDeg = angle,
+                        label = action.id,
+                        accent = if (action.active) MytharaColors.Bok else MytharaColors.Charple,
+                        glyph = action.glyph,
+                        onTap = { onPttActionTap(action) },
+                    )
+                }
+            }
+        }
+
+        visibleChips.forEach { chip ->
+            val r = chip.angleDeg * (PI / 180.0).toFloat()
             val dxPx = (sin(r) * radiusPx * expansion.value)
             val dyPx = (-cos(r) * radiusPx * expansion.value)
             val chipCx = cx + dxPx
@@ -117,9 +162,6 @@ fun PopupAmulet(
 
             val chipHalfDp = (SLOT_SIZE_DP / 2).dp
             val chipLeftDp = with(density) { chipCx.toDp() } - chipHalfDp
-            // Lift the chip up by half its label-block so the LABEL
-            // sits where the chip's centre would be (mirrors the
-            // bottom-anchored Constellation's chip layout).
             val chipTopDp = with(density) { chipCy.toDp() } - chipHalfDp
 
             Box(
@@ -133,18 +175,18 @@ fun PopupAmulet(
                             .size(SLOT_SIZE_DP.dp)
                             .clip(CircleShape)
                             .background(MytharaColors.Surface)
-                            .border(width = 1.5.dp, color = slot.accent, shape = CircleShape)
-                            .clickable { onSlotTap(slot) },
+                            .border(width = 1.5.dp, color = chip.accent, shape = CircleShape)
+                            .clickable { chip.onTap() },
                         contentAlignment = androidx.compose.ui.Alignment.Center,
                     ) {
                         Text(
-                            text = slot.label.firstOrNull()?.uppercaseChar()?.toString().orEmpty(),
-                            color = slot.accent,
+                            text = chip.glyph,
+                            color = chip.accent,
                             style = MaterialTheme.typography.titleMedium,
                         )
                     }
                     Text(
-                        text = slot.label,
+                        text = chip.label,
                         color = MytharaColors.FgMute,
                         fontSize = 10.sp,
                         textAlign = TextAlign.Center,
@@ -155,8 +197,12 @@ fun PopupAmulet(
         }
 
         // Central rose amulet — sits at the anchor itself. Tap it
-        // to dismiss without navigating (replaces the old "tap rose
-        // → home" gesture; "home" is now a constellation chip).
+        // to TOGGLE mode (Menu ↔ PTT). To dismiss, tap the scrim
+        // around the amulet. Two-tap path:
+        //   long-press (open) → tap rose → in PTT mode
+        //   tap rose again → back in Menu mode
+        // The rose always reads as "the brand mark" even when the
+        // surrounding chips change function.
         val amuletLeftDp = with(density) { cx.toDp() } - (amuletSizeDp / 2).dp
         val amuletTopDp = with(density) { cy.toDp() } - (amuletSizeDp / 2).dp
         Box(
@@ -166,10 +212,30 @@ fun PopupAmulet(
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                    onClick = onCenterTap,
+                    onClick = {
+                        mode = if (mode == AmuletMode.Menu) AmuletMode.Ptt else AmuletMode.Menu
+                    },
                 ),
         ) {
             RoseAmulet(modifier = Modifier.size(amuletSizeDp.dp))
+        }
+        // Mode label below the rose so the user knows what they're
+        // looking at. Tiny, low-contrast so it doesn't compete with
+        // the chips.
+        val labelTopDp = with(density) { (cy + amuletHalfPx).toDp() } + 6.dp
+        val labelLeftDp = with(density) { cx.toDp() } - 28.dp
+        Box(
+            modifier = Modifier
+                .offset(x = labelLeftDp, y = labelTopDp)
+                .graphicsLayer { alpha = expansion.value },
+        ) {
+            Text(
+                text = if (mode == AmuletMode.Menu) "menu" else "ptt",
+                color = MytharaColors.FgDim,
+                fontSize = 10.sp,
+                modifier = Modifier.width(56.dp),
+                textAlign = TextAlign.Center,
+            )
         }
 
         // Suppress unused-canvas-size variables — they're documented
@@ -179,6 +245,18 @@ fun PopupAmulet(
         @Suppress("UNUSED_VARIABLE") val unusedEp = edgePaddingPx
     }
 }
+
+/** Internal renderable for a single ring chip, decoupled from the
+ *  source data type (ConstellationSlot for Menu, QuickAction for
+ *  PTT) so the layout loop only knows about angle / glyph / accent
+ *  / onTap. */
+private data class ChipPayload(
+    val angleDeg: Float,
+    val label: String,
+    val accent: androidx.compose.ui.graphics.Color,
+    val glyph: String,
+    val onTap: () -> Unit,
+)
 
 private const val CONSTELLATION_RADIUS_DP = 140
 private const val SLOT_SIZE_DP = 44
