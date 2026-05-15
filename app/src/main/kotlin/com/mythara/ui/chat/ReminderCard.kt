@@ -23,7 +23,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import com.mythara.reminders.ReminderAlarmReceiver
@@ -71,8 +74,24 @@ fun ReminderCard(item: ChatViewModel.ChatItem.ReminderCard) {
         isLive -> "${Glyph.Dot} reminder"
         else -> "${Glyph.CircleOutline} scheduled"
     }
+    // Build the subtitle as an AnnotatedString so the leading
+    // countdown ("In 14m") shows in bold while the absolute clock
+    // suffix ("· 4:34 PM") stays at regular weight — visual weight
+    // matches the user's glance order: "how soon" first, "what
+    // exact time" second.
     val whenLabel = remember(item.scheduledForMs, now) {
-        formatScheduledFor(item.scheduledForMs, now)
+        val raw = formatScheduledFor(item.scheduledForMs, now)
+        val sepIdx = raw.indexOf(" · ").takeIf { it >= 0 }
+        if (sepIdx == null) {
+            buildAnnotatedString {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(raw) }
+            }
+        } else {
+            buildAnnotatedString {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(raw.substring(0, sepIdx)) }
+                append(raw.substring(sepIdx))
+            }
+        }
     }
 
     Column(

@@ -407,7 +407,7 @@
                     <Variant mode="AMBIENT" target="alpha" value="0" />
                     <Transform target="x" value="0 - (([SECOND] * 8) % 700)" />
                     <Text align="START" maxLines="1">
-                        <Font family="jetbrains_mono_regular" size="15" color="#ffffb000">
+                        <Font family="jetbrains_mono_regular" size="15" weight="BOLD" color="#ffffb000">
                             <Template><![CDATA[⏰ %s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                         </Font>
                     </Text>
@@ -417,10 +417,10 @@
                      pushing — formatted "In Nm - title" — just truncated
                      to fit the slot width without animation. Smaller
                      dimmer font for AOD burn-in / battery. -->
-                <PartText x="0" y="0" width="340" height="28" alpha="0">
+                <PartText x="0" y="0" width="340" height="100" alpha="0">
                     <Variant mode="AMBIENT" target="alpha" value="255" />
-                    <Text align="CENTER" maxLines="1" ellipsize="END">
-                        <Font family="jetbrains_mono_regular" size="13" color="#ff9be8c8">
+                    <Text align="CENTER" maxLines="3">
+                        <Font family="jetbrains_mono_regular" size="13" weight="BOLD" color="#ffffb000">
                             <Template><![CDATA[⏰ %s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                         </Font>
                     </Text>
@@ -431,15 +431,15 @@
                     <Variant mode="AMBIENT" target="alpha" value="0" />
                     <Transform target="x" value="0 - (([SECOND] * 8) % 700)" />
                     <Text align="START" maxLines="1">
-                        <Font family="jetbrains_mono_regular" size="15" color="#ffffb000">
+                        <Font family="jetbrains_mono_regular" size="15" weight="BOLD" color="#ffffb000">
                             <Template><![CDATA[⏰ %s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                         </Font>
                     </Text>
                 </PartText>
-                <PartText x="0" y="0" width="340" height="28" alpha="0">
+                <PartText x="0" y="0" width="340" height="100" alpha="0">
                     <Variant mode="AMBIENT" target="alpha" value="255" />
-                    <Text align="CENTER" maxLines="1" ellipsize="END">
-                        <Font family="jetbrains_mono_regular" size="13" color="#ff9be8c8">
+                    <Text align="CENTER" maxLines="3">
+                        <Font family="jetbrains_mono_regular" size="13" weight="BOLD" color="#ffffb000">
                             <Template><![CDATA[⏰ %s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                         </Font>
                     </Text>

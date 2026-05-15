@@ -84,8 +84,16 @@ class MytharaWearDataReceiver : WearableListenerService() {
             WearPaths.REMINDER -> {
                 val raw = runCatching { String(event.data, Charsets.UTF_8) }.getOrNull() ?: return
                 Log.d(TAG, "reminder from phone (${raw.length}B)")
+                // Detect whether this is a NEW reminder (different from
+                // whatever was cached) so we only chirp on actual
+                // change, not on every periodic re-push of the same
+                // value. Empty payload (no upcoming reminder) doesn't
+                // tone either — silence isn't a notification.
+                val previous = runCatching { ClusterDataStore.reminderRaw(this) }.getOrNull().orEmpty()
+                val changed = raw.isNotBlank() && raw != previous
                 ClusterDataStore.saveReminder(this, raw)
                 requestUpdate(ReminderComplicationService::class.java)
+                if (changed) playNotificationTone()
             }
 
             WearPaths.AUDIT -> {
@@ -161,6 +169,21 @@ class MytharaWearDataReceiver : WearableListenerService() {
         runCatching {
             vibrator.vibrate(VibrationEffect.createOneShot(160, VibrationEffect.DEFAULT_AMPLITUDE))
         }.onFailure { Log.w(TAG, "vibrate failed: ${it.message}") }
+    }
+
+    /** Play the system's default notification tone — the wrist's
+     *  audible "you've got a new scheduled reminder" ping. Uses the
+     *  RingtoneManager's NOTIFICATION default so it matches the
+     *  user's chosen system sound rather than a custom sample. Never
+     *  blocks; failures are silently swallowed. */
+    private fun playNotificationTone() {
+        runCatching {
+            val uri = android.media.RingtoneManager.getDefaultUri(
+                android.media.RingtoneManager.TYPE_NOTIFICATION,
+            )
+            val rt = android.media.RingtoneManager.getRingtone(this, uri) ?: return
+            rt.play()
+        }.onFailure { Log.w(TAG, "notification tone failed: ${it.message}") }
     }
 
     companion object {

@@ -93,6 +93,13 @@ object ClusterDataStore {
         prefs(ctx).edit().putString(KEY_REMINDER, raw).apply()
     }
 
+    /** Raw cached reminder payload (still in the wire format). Used
+     *  by the receiver to detect "is this a NEW reminder" before
+     *  triggering the notification tone — periodic re-pushes of the
+     *  same value should not chirp again. */
+    fun reminderRaw(ctx: Context): String =
+        prefs(ctx).getString(KEY_REMINDER, "").orEmpty()
+
     /** The single next upcoming reminder, or null when none is pending. */
     fun reminder(ctx: Context): WatchReminder? {
         val raw = prefs(ctx).getString(KEY_REMINDER, "").orEmpty()
