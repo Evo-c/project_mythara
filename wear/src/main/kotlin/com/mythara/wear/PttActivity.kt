@@ -2,6 +2,7 @@ package com.mythara.wear
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.speech.RecognitionListener
@@ -61,6 +62,10 @@ private val BOK = Color(0xFF68FFD6)
 class PttActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Pin to portrait in code as well as the manifest — Samsung's
+        // One UI Watch doesn't reliably honour the manifest attribute
+        // alone, so the screen would flip on wrist movement.
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         // Keep the screen on for the whole short capture so it can't
         // dim mid-utterance.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

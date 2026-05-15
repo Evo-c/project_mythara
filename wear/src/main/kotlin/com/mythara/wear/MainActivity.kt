@@ -3,6 +3,7 @@ package com.mythara.wear
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -107,6 +108,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Pin to portrait in code as well as the manifest — Samsung's
+        // One UI Watch doesn't reliably honour the manifest attribute
+        // alone, so the screen would flip on wrist movement.
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         setContent {
             MaterialTheme {
                 Scaffold {
