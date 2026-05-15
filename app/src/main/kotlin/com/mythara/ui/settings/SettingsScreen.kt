@@ -105,6 +105,9 @@ fun SettingsScreen(
         CalendarPreAnnouncePanel()
 
         Spacer(Modifier.height(16.dp))
+        WatchSyncPanel()
+
+        Spacer(Modifier.height(16.dp))
         AutoReplyPrefixPanel()
 
         Spacer(Modifier.height(16.dp))

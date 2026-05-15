@@ -48,14 +48,23 @@ class WatchClusterDataPusher @Inject constructor(
     fun start() {
         scope.launch {
             while (true) {
-                runCatching { pushTasks() }.onFailure { Log.w(TAG, "task push: ${it.message}") }
-                runCatching { pushPeople() }.onFailure { Log.w(TAG, "people push: ${it.message}") }
-                runCatching { pushCalendar() }.onFailure { Log.w(TAG, "calendar push: ${it.message}") }
-                runCatching { pushReminder() }.onFailure { Log.w(TAG, "reminder push: ${it.message}") }
-                runCatching { pushAudit() }.onFailure { Log.w(TAG, "audit push: ${it.message}") }
+                pushAllNow()
                 delay(PUSH_INTERVAL_MS)
             }
         }
+    }
+
+    /** Fire every cluster-data push immediately. Public so the
+     *  manual "sync to watch now" button + the periodic watch-sync
+     *  worker can trigger a full refresh outside the in-process
+     *  loop. Failures per push are individually swallowed so one
+     *  bad surface doesn't take the others down. */
+    suspend fun pushAllNow() {
+        runCatching { pushTasks() }.onFailure { Log.w(TAG, "task push: ${it.message}") }
+        runCatching { pushPeople() }.onFailure { Log.w(TAG, "people push: ${it.message}") }
+        runCatching { pushCalendar() }.onFailure { Log.w(TAG, "calendar push: ${it.message}") }
+        runCatching { pushReminder() }.onFailure { Log.w(TAG, "reminder push: ${it.message}") }
+        runCatching { pushAudit() }.onFailure { Log.w(TAG, "audit push: ${it.message}") }
     }
 
     private suspend fun pushTasks() {

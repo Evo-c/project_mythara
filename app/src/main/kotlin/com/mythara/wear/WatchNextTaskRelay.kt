@@ -47,6 +47,17 @@ class WatchNextTaskRelay @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val tick = MutableStateFlow(0L)
 
+    /** Compute the current next-task line and push it once. Public
+     *  so the manual "sync to watch now" path + the periodic
+     *  15-min worker can refresh the wrist without waiting for
+     *  either the in-process ticker or a task DB change. */
+    suspend fun pushNow() {
+        val rows = runCatching { taskRepo.dao.listRecent(limit = 200) }.getOrDefault(emptyList())
+        val line = formatLine(rows)
+        runCatching { pusher.push(line) }
+            .onFailure { Log.w(TAG, "manual push failed: ${it.message}") }
+    }
+
     fun start() {
         // Wall-clock ticker — emit every minute so the "in N min"
         // countdown re-evaluates against the current time.

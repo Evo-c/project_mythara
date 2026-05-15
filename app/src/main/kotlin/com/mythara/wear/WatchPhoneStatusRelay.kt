@@ -37,6 +37,11 @@ class WatchPhoneStatusRelay @Inject constructor(
         }
     }
 
+    /** Force-push the current battery state. Called by the manual
+     *  "sync to watch now" path + the periodic 15-min worker so the
+     *  wrist gets fresh data without waiting for the in-process loop. */
+    fun pushNow() = pushBattery()
+
     private fun pushBattery() {
         val pct = batteryPercent() ?: return
         val bytes = pct.toString().toByteArray(Charsets.UTF_8)

@@ -166,6 +166,10 @@ class MytharaApp : Application(), Configuration.Provider {
         // re-evaluated every minute as time moves forward AND on
         // every task DB change (new schedule, cancel, fire).
         watchNextTaskRelay.start()
+        // Periodic 15-min full watch resync (insight line, cluster
+        // data, phone status). Backstops the in-process relays so
+        // the wrist stays fresh even when the app's been sleeping.
+        com.mythara.wear.WatchSyncWorker.ensureScheduled(this)
         // Watch-face phone-status relay — publishes the phone's battery
         // level to the watch (WFF can't read the peer device's battery).
         watchPhoneStatusRelay.start()

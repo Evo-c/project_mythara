@@ -453,7 +453,7 @@
                         </Expressions>
                         <Compare expression="agent_cursor_on_s">
                             <PartText x="0" y="0" width="340" height="44" alpha="255">
-                                <Text align="START" maxLines="2">
+                                <Text align="START" maxLines="1" ellipsize="MARQUEE">
                                     <Font family="jetbrains_mono_regular" size="14" color="#ff39ff14">
                                         <Template><![CDATA[> %s|]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                                     </Font>
@@ -467,7 +467,7 @@
                         </Expressions>
                         <Compare expression="agent_cursor_off_s">
                             <PartText x="0" y="0" width="340" height="44" alpha="255">
-                                <Text align="START" maxLines="2">
+                                <Text align="START" maxLines="1" ellipsize="MARQUEE">
                                     <Font family="jetbrains_mono_regular" size="14" color="#ff39ff14">
                                         <Template><![CDATA[> %s ]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                                     </Font>
@@ -486,7 +486,7 @@
                         </Expressions>
                         <Compare expression="agent_cursor_on_l">
                             <PartText x="0" y="0" width="340" height="44" alpha="255">
-                                <Text align="START" maxLines="2">
+                                <Text align="START" maxLines="1" ellipsize="MARQUEE">
                                     <Font family="jetbrains_mono_regular" size="14" color="#ff39ff14">
                                         <Template><![CDATA[> %s|]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                                     </Font>
@@ -500,7 +500,7 @@
                         </Expressions>
                         <Compare expression="agent_cursor_off_l">
                             <PartText x="0" y="0" width="340" height="44" alpha="255">
-                                <Text align="START" maxLines="2">
+                                <Text align="START" maxLines="1" ellipsize="MARQUEE">
                                     <Font family="jetbrains_mono_regular" size="14" color="#ff39ff14">
                                         <Template><![CDATA[> %s ]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                                     </Font>
