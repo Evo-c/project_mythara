@@ -39,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -57,9 +58,11 @@ import com.mythara.me.MeProfileStore
 import com.mythara.ui.amulet.RoseGeometry
 import com.mythara.ui.theme.MytharaColors
 import dagger.hilt.android.EntryPointAccessors
+import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -190,86 +193,206 @@ fun MytharaStatusBar(
         else -> PIXEL_PINHOLE_FLOOR_DP.toFloat()
     }
 
-    // Two-layer Box so the wrapping pills (much larger than the
-    // strip's own visible bg height) can extend below it without
-    // being clipped by the rounded-corner mask:
-    //   - Outer Box: positioning + size, NO clip
-    //   - Inner Box: rounded background, clipped, sized to
-    //     STRIP_HEIGHT
-    //   - Foreground content (clusters + DI): rendered on top of
-    //     the bg layer, free to overflow visually
-    Box(
+    // Consolidated layout — the entire status strip is ONE slim
+    // island-style pill that holds ALL the chrome:
+    //   - LEFT:  rose (tap → spin animation, same as DynamicIsland)
+    //   - MIDDLE: clock | signal dots | M● I● | Me | PTT mic |
+    //             battery%, all evenly spaced, weight(1f) so it
+    //             takes the slack between the rose + wordmark
+    //   - RIGHT: MYTHARA wordmark
+    //
+    // Per user spec ("move all the status bar content INTO the
+    // island; centre the rose + text, keep same width, decrease
+    // height like a regular status bar"). The pill is now full-
+    // width + thin (~30dp), with the brand mark bracketing the
+    // utility content.
+    val pillBg = Color(0xCC000000)
+    Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(top = safeTopDp.dp),
+            .padding(top = safeTopDp.dp, start = 8.dp, end = 8.dp)
+            .height(STRIP_HEIGHT_DP.dp)
+            .clip(RoundedCornerShape(STRIP_HEIGHT_DP.dp))
+            .background(pillBg)
+            .padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // Background pad — clipped + filled. This is what the
-        // user perceives as "the status bar shape".
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(STRIP_HEIGHT_DP.dp)
-                .clip(RoundedCornerShape(bottomStart = 14.dp, bottomEnd = 14.dp))
-                .background(MytharaColors.Bg),
-        )
-        // Foreground content layer — sized to the strip's bg
-        // height + horizontal padding for the clusters, but does
-        // NOT clip its children, so the 3x DynamicIsland pill is
-        // free to render above + below the strip's visible bg.
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(STRIP_HEIGHT_DP.dp)
-                .padding(horizontal = 14.dp, vertical = 4.dp),
-        ) {
-        // Left cluster: clock + signal-strength dots.
+        // LEFT: the rose. Tap → spin animation + clear sink.
+        // Delegates to the same SpinningRoseTap helper used by
+        // the standalone DynamicIsland composable (kept here so
+        // the in-pill rose still feels like the brand mark).
+        SpinningRoseTap(sizeDp = ROSE_DP, modifier = Modifier)
+
+        // MIDDLE — utility cluster. weight(1f) so it absorbs
+        // the slack between the rose on the left and the
+        // MYTHARA wordmark on the right; Arrangement.SpaceEvenly
+        // distributes the items horizontally.
         Row(
-            modifier = Modifier.align(Alignment.CenterStart),
+            modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
             Text(
                 text = nowFmt,
                 color = MytharaColors.Fg,
-                fontSize = 13.sp,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Medium,
             )
             SignalDots(litCount = network.bars, accent = SIGNAL_COLOR)
-        }
-
-        // Centre: iPhone Dynamic Island-style pill — wraps around
-        // the camera cutout dock-bar style when one is present.
-        // Idles as the rose + MYTHARA wordmark and morphs to
-        // surface momentary insights pushed into [DynamicIslandSink]
-        // (agent thinking, fresh insight from phone, next reminder
-        // countdown, HR alert). Tap → brief animation + clears
-        // the active insight. Bouncing-dock entrance plays on
-        // mount and on every fold-posture flip.
-        DynamicIsland(
-            modifier = Modifier.align(Alignment.Center),
-            cutout = cutout,
-        )
-
-        // Right cluster: Me avatar (taps → AboutMe) + API health
-        // dots + battery percent + circular battery icon.
-        Row(
-            modifier = Modifier.align(Alignment.CenterEnd),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            MeAvatar(onClick = onOpenAboutMe)
             HealthDot(label = "M", health = minimaxHealth, accent = MINIMAX_COLOR)
             HealthDot(label = "I", health = imageHealth, accent = IMAGE_COLOR)
-            Spacer(Modifier.width(2.dp))
+            MeAvatar(onClick = onOpenAboutMe)
+            PttButton()
             Text(
                 text = "${battery.percent}%",
                 color = MytharaColors.FgMute,
-                fontSize = 11.sp,
+                fontSize = 10.sp,
             )
             CircularBatteryIcon(percent = battery.percent, charging = battery.charging)
         }
-        } // end inner foreground Box
-    } // end outer positioning Box
+
+        // RIGHT: MYTHARA wordmark.
+        Text(
+            text = "MYTHARA",
+            color = RoseGeometry.Lavender,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.5.sp,
+        )
+    }
+}
+
+/**
+ * The rose mark with the same tap-to-spin animation the standalone
+ * DynamicIsland uses. Lifted into MytharaStatusBar so the
+ * consolidated pill keeps the user's "rose spins on touch" ask
+ * even though we dropped the separate DynamicIsland composable
+ * from the layout. Reads insight accent from the sink so a fresh
+ * insight tints the rose without changing other chrome.
+ */
+@Composable
+private fun SpinningRoseTap(sizeDp: Int, modifier: Modifier = Modifier) {
+    val scope = rememberCoroutineScope()
+    val rotation = remember { androidx.compose.animation.core.Animatable(0f) }
+    val pulseScale = remember { androidx.compose.animation.core.Animatable(1f) }
+    val insight by androidx.compose.runtime.produceState<DynamicIslandSink.Insight?>(
+        initialValue = null, key1 = Unit,
+    ) {
+        while (true) {
+            value = DynamicIslandSink.current()
+            kotlinx.coroutines.delay(500L)
+        }
+    }
+    Box(
+        modifier = modifier
+            .size(sizeDp.dp)
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = {
+                    DynamicIslandSink.clear()
+                    scope.launch {
+                        rotation.snapTo(0f)
+                        rotation.animateTo(
+                            360f,
+                            androidx.compose.animation.core.tween(
+                                durationMillis = 700,
+                                easing = androidx.compose.animation.core.LinearOutSlowInEasing,
+                            ),
+                        )
+                        rotation.snapTo(0f)
+                    }
+                    scope.launch {
+                        pulseScale.snapTo(1f)
+                        pulseScale.animateTo(1.12f, androidx.compose.animation.core.tween(140))
+                        pulseScale.animateTo(1f, androidx.compose.animation.core.tween(220))
+                    }
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(modifier = Modifier.scale(pulseScale.value)) {
+            RoseMarkSmallSpinning(
+                sizeDp = sizeDp,
+                rotationDeg = rotation.value,
+                accent = insight?.accent,
+            )
+        }
+    }
+}
+
+/** Small spinning rose used by [SpinningRoseTap]. Mirror of
+ *  DynamicIsland's RoseMarkSpinning kept here so the pill is
+ *  self-contained. */
+@Composable
+private fun RoseMarkSmallSpinning(
+    sizeDp: Int,
+    rotationDeg: Float,
+    accent: Color?,
+) {
+    val petalPath = remember { Path() }
+    val hexPath = remember { Path() }
+    Canvas(modifier = Modifier.size(sizeDp.dp)) {
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val scale = (minOf(size.width, size.height) * 0.5f) /
+            RoseGeometry.OuterRadiusSourceUnits
+        rotate(degrees = rotationDeg, pivot = Offset(cx, cy)) {
+            for (deg in RoseGeometry.BigPetalAngles) {
+                RoseGeometry.petalPath(
+                    diamond = RoseGeometry.BigPetal,
+                    angleDegrees = deg.toFloat(),
+                    cx = cx, cy = cy, scale = scale,
+                    out = petalPath,
+                )
+                drawPath(petalPath, color = accent ?: RoseGeometry.Purple)
+            }
+            for (deg in RoseGeometry.SmallPetalAngles) {
+                RoseGeometry.petalPath(
+                    diamond = RoseGeometry.SmallPetal,
+                    angleDegrees = deg.toFloat(),
+                    cx = cx, cy = cy, scale = scale,
+                    out = petalPath,
+                )
+                drawPath(petalPath, color = RoseGeometry.Lavender)
+            }
+            RoseGeometry.hexPath(cx, cy, scale, hexPath)
+            drawPath(hexPath, color = RoseGeometry.Cyan)
+        }
+    }
+}
+
+/** PTT (push-to-talk) mic button. Tap → broadcasts an ACTION_ASSIST
+ *  intent which Mythara's MainActivity catches and routes into the
+ *  voice path (same entry-point Pixel Buds touch-and-hold + the
+ *  squeeze gesture use). Small filled circle with a 🎙 glyph so it
+ *  reads as a mic at status-bar scale without needing the full
+ *  MicButton's recording-state UX (that lives in the chat composer). */
+@Composable
+private fun PttButton() {
+    val ctx = LocalContext.current
+    Box(
+        modifier = Modifier
+            .size(PTT_BUTTON_DP.dp)
+            .clip(CircleShape)
+            .background(MytharaColors.Charple.copy(alpha = 0.85f))
+            .clickable {
+                runCatching {
+                    val intent = android.content.Intent(android.content.Intent.ACTION_ASSIST).apply {
+                        `package` = ctx.packageName
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    ctx.startActivity(intent)
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "🎙",
+            fontSize = 10.sp,
+        )
+    }
 }
 
 /**
@@ -511,12 +634,19 @@ private fun Dot(accent: Color, glow: Boolean, sizeDp: Int) {
     )
 }
 
-/** Status-strip height. Sized to comfortably contain the
- *  Dynamic Island pill (54dp tall — halved from 108dp per user
- *  spec) plus a few dp of vertical breathing room. Strip BG
- *  layer height stays under the pill height so the pill visibly
- *  floats over the chrome rather than being clipped to it. */
-internal const val STRIP_HEIGHT_DP = 38
+/** Status-strip height — slim like a regular Android status
+ *  bar, per user spec ("just decrease the height like a regular
+ *  notification status bar"). 30dp is the comfortable minimum
+ *  that still fits the clock + glyphs at 10-11sp without
+ *  clipping the descenders. */
+internal const val STRIP_HEIGHT_DP = 30
+
+/** Rose icon size inside the consolidated pill. */
+private const val ROSE_DP = 22
+
+/** PTT mic button diameter. Same scale as the API health dots
+ *  + Me avatar so the cluster reads uniformly. */
+private const val PTT_BUTTON_DP = 18
 private const val SIGNAL_BAR_COUNT = 4
 private const val BATTERY_ICON_DP = 16
 private const val ME_AVATAR_DP = 18
