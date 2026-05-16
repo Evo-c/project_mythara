@@ -168,23 +168,23 @@ fun MytharaStatusBar(
     // a single centred pill.
     val cutout = rememberCutoutRect()
 
-    // Top padding strategy — strip pinned to the very TOP of the
-    // screen per user request ("move it all the way up"). The
-    // previous version centered the strip's vertical midpoint on
-    // the cutout, which still felt low because the strip's box
-    // had to extend ABOVE that midpoint by STRIP_HEIGHT/2 — so
-    // when the cutout's center was near 20dp the strip's top edge
-    // landed at 0dp anyway, giving the illusion of "below" because
-    // the bg fill stopped at strip bottom (~88dp on the 3x pill).
+    // Top padding strategy — strip sits BELOW the cutout. Earlier
+    // versions tried to wrap the pill AROUND the cutout, but the
+    // absolute-offset positioning was off (wrap pills were
+    // rendered way past the actual cutout because their offsets
+    // were relative to a center-aligned Box, not to the screen
+    // origin) which made the island feel like it was floating in
+    // the wrong place AND dominating the screen.
     //
-    // New rule: safeTopDp is just 0 when a cutout is present (the
-    // pill itself wraps around the hole). On non-cutout devices
-    // we still respect the system inset so we don't tuck under
-    // the system status bar zone.
+    // Simpler model: pad the strip's top to clear the cutout, then
+    // let the strip + island + clock + battery all live on a
+    // single horizontal line BENEATH the cutout. The clock and
+    // battery clusters are visible at the strip's edges and the
+    // island is just centered between them.
     val cutoutTopDp = WindowInsets.displayCutout.asPaddingValues().calculateTopPadding()
     val statusTopDp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val safeTopDp = when {
-        cutout != null -> 0f
+        cutout != null -> cutout.bottomDp + 4f       // 4dp gap below the cutout
         cutoutTopDp.value > 0f -> cutoutTopDp.value
         statusTopDp.value > 0f -> statusTopDp.value
         else -> PIXEL_PINHOLE_FLOOR_DP.toFloat()

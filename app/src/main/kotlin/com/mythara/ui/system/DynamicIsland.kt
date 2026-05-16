@@ -144,31 +144,26 @@ fun DynamicIsland(
         Unit
     }
 
-    if (cutout == null) {
-        // Mode A — no cutout, single pill centred.
-        SinglePill(
-            modifier = modifier,
-            rotation = rotation.value,
-            pulseScale = pulseScale.value,
-            insight = insight,
-            showingInsight = showingInsight,
-            onTap = tapHandler,
-        )
-    } else {
-        // Mode B — wrap around the cutout. Two halves anchored to
-        // the cutout's edges, each scales in from `bounce` so
-        // they bounce into place.
-        WrappingPills(
-            modifier = modifier,
-            cutout = cutout,
-            bounce = bounce.value,
-            rotation = rotation.value,
-            pulseScale = pulseScale.value,
-            insight = insight,
-            showingInsight = showingInsight,
-            onTap = tapHandler,
-        )
-    }
+    // Always render the single-pill layout. The earlier "wrap
+    // around the cutout" mode used absolute offsets relative to
+    // a center-aligned Box, which positioned the halves in the
+    // wrong place on real hardware (offsets landed in the
+    // DynamicIsland's local coord system, not the screen's).
+    // The host strip now anchors its top BELOW the cutout
+    // (MytharaStatusBar.safeTopDp = cutout.bottom + 4), so a
+    // single centered pill is the right shape — no need to
+    // wrap. Cutout reference is kept on the signature for the
+    // bounce-replay LaunchedEffect key (so a fold-flip replays
+    // the entrance animation).
+    @Suppress("UNUSED_PARAMETER") val cutoutRef = cutout
+    SinglePill(
+        modifier = modifier,
+        rotation = rotation.value,
+        pulseScale = pulseScale.value,
+        insight = insight,
+        showingInsight = showingInsight,
+        onTap = tapHandler,
+    )
 }
 
 /* --------------------------------------------------- single-pill mode */

@@ -15,8 +15,13 @@ import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.view.WindowManager
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.lifecycle.LifecycleOwner
@@ -202,7 +207,22 @@ class LockscreenIslandService : Service() {
             setContent {
                 MytharaTheme {
                     val cutout = rememberCutoutRect()
-                    DynamicIsland(cutout = cutout)
+                    // Wrap the island in a Box that fills the
+                    // overlay window's full width but only
+                    // CENTER-ALIGNS the island inside it. Without
+                    // this wrapper the ComposeView's MATCH_PARENT
+                    // width host gave the island unbounded width,
+                    // making the SpaceBetween Row spread to full
+                    // screen even with widthIn(max=140) on the
+                    // Row itself.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .wrapContentHeight(),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        DynamicIsland(cutout = cutout)
+                    }
                 }
             }
         }
