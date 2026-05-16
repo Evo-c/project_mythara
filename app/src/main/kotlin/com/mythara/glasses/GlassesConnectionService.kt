@@ -41,7 +41,15 @@ class GlassesConnectionService : Service() {
     @Inject lateinit var screenStore: GlassesScreenStore
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    @Volatile private var started = false
+
+    // One-shot bookkeeping for "things that only need to happen once
+    // per service-process lifetime" (router subscription, render-loop
+    // collector). startSession() itself is fired on EVERY onStartCommand
+    // — without that, a failed first attempt would leave the FGS sitting
+    // idle and every subsequent "start session" tap would silently
+    // re-deliver the intent into an already-alive service that thought
+    // it was done.
+    @Volatile private var oneShotsBound = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -51,20 +59,10 @@ class GlassesConnectionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!started) {
-            started = true
-            startForegroundCompat()
+        startForegroundCompat()
+        if (!oneShotsBound) {
+            oneShotsBound = true
             router.start()
-            // Try to bring up the DAT session. The facade no-ops when
-            // the SDK isn't on the classpath (initial commit state) so
-            // this is safe to call unconditionally.
-            scope.launch {
-                runCatching {
-                    GlassesDatFacade.startSession()
-                }.onFailure {
-                    Log.w(TAG, "startSession threw: ${it.message}")
-                }
-            }
             // Re-render to glasses on every screen-store change.
             scope.launch {
                 screenStore.current.collect { screen ->
@@ -73,7 +71,24 @@ class GlassesConnectionService : Service() {
                 }
             }
         }
-        return START_STICKY
+        // Always attempt a fresh session per intent — if the previous
+        // attempt failed (DAT_APP_REQUIRED, NO_ELIGIBLE_DEVICE, etc),
+        // re-tapping start session in the panel needs to actually retry.
+        scope.launch {
+            val ok = runCatching { GlassesDatFacade.startSession() }
+                .getOrElse {
+                    Log.w(TAG, "startSession threw: ${it.message}")
+                    false
+                }
+            if (!ok) {
+                // Session didn't open. Tear the FGS down so the next
+                // "start session" tap gets a fresh service instance
+                // with no stale `started`-style guard in the way.
+                Log.d(TAG, "startSession returned false — stopping FGS so retry can re-deliver")
+                stopSelf()
+            }
+        }
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
