@@ -375,14 +375,18 @@ private fun RoseMarkSpinning(
     }
 }
 
-/** Pill height — bumped from 22dp → 26dp so the pill visually
- *  swallows the camera pinhole on Pixel-class devices. Pinhole
- *  diameter on Pixel 8/9/10 ≈ 24dp at xxhdpi; a shorter pill
- *  meant the hole peeked above + below it. 26dp clears
- *  comfortably with the new 8dp gap on either side. */
-private const val PILL_HEIGHT_DP = 26
-private const val ROSE_DP = 16
-private const val ACCENT_DOT_DP = 7
+/** Pill height — sized to swallow the actual Pixel pinhole.
+ *  Per the documented Pixel cutout dimensions (6.0mm physical
+ *  diameter, ~55-65dp logical at xxhdpi/xxxhdpi), the cutout
+ *  fills more screen real estate than the earlier 26dp pill
+ *  could comfortably wrap. We bump to 36dp so the pill height
+ *  (and therefore both the wrap halves AND the single-pill
+ *  fallback) is comfortably TALLER than the cutout's vertical
+ *  extent — so the camera hole fits ENTIRELY within the pill's
+ *  vertical span, not poking above or below. */
+private const val PILL_HEIGHT_DP = 36
+private const val ROSE_DP = 22
+private const val ACCENT_DOT_DP = 9
 private const val MAX_INSIGHT_CHARS = 28
 private const val POLL_INTERVAL_MS = 500L
 
