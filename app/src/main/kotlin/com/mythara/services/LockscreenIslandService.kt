@@ -257,31 +257,18 @@ class LockscreenIslandService : Service() {
                     // of the current one. The status must be
                     // the new overlay").
                     com.mythara.ui.system.MytharaStatusBar(
-                        // Pill positioned below SystemUI's
-                        // status bar zone via safeTopDp (= cutout
-                        // bottom + 4dp on cutout devices). No
-                        // black-zone wrapper — it broke the
-                        // overlay's pointer-input dispatch.
-                        onRoseTap = {
-                            // Star → open chat. Deep-link via
-                            // MainActivity + EXTRA_OPEN_ROUTE.
-                            val intent = Intent(this@LockscreenIslandService, MainActivity::class.java)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                .putExtra(EXTRA_OPEN_ROUTE, "chat")
-                            runCatching { startActivity(intent) }
-                        },
-                        onOpenAboutMe = {
-                            val intent = Intent(this@LockscreenIslandService, MainActivity::class.java)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                .putExtra(EXTRA_OPEN_ROUTE, "about-me")
-                            runCatching { startActivity(intent) }
-                        },
-                        onOpenUsage = {
-                            val intent = Intent(this@LockscreenIslandService, MainActivity::class.java)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                .putExtra(EXTRA_OPEN_ROUTE, "usage")
-                            runCatching { startActivity(intent) }
-                        },
+                        // Every teardrop-menu launcher deep-links
+                        // MainActivity with EXTRA_OPEN_ROUTE so
+                        // Mythara comes to foreground on the
+                        // requested screen, per user spec.
+                        onRoseTap = { launchMytharaRoute("chat") },
+                        onOpenAboutMe = { launchMytharaRoute("about-me") },
+                        onOpenPeople = { launchMytharaRoute("people") },
+                        onOpenMemory = { launchMytharaRoute("memory") },
+                        onOpenTasks = { launchMytharaRoute("tasks") },
+                        onOpenUsage = { launchMytharaRoute("usage") },
+                        onOpenSettings = { launchMytharaRoute("settings") },
+                        onOpenTriage = { launchMytharaRoute("triage") },
                     )
                 }
             }
@@ -311,6 +298,24 @@ class LockscreenIslandService : Service() {
         }
         overlayView = null
         windowManager = null
+    }
+
+    /**
+     * Bring Mythara to foreground on a specific named route.
+     * Used by every teardrop-menu launcher tap so the user can
+     * jump from any third-party app into the exact Mythara
+     * screen they wanted. Service runs without a back stack so
+     * we use FLAG_ACTIVITY_NEW_TASK + EXTRA_OPEN_ROUTE; the
+     * activity's MytharaRoot picks up the extra and navigates
+     * its NavController there on mount.
+     */
+    private fun launchMytharaRoute(route: String) {
+        runCatching {
+            val intent = Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .putExtra(EXTRA_OPEN_ROUTE, route)
+            startActivity(intent)
+        }
     }
 
     /* --- Compose hosting glue: single LifecycleOwner + SavedStateOwner ---

@@ -12,7 +12,9 @@ import android.os.BatteryManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -110,32 +112,26 @@ import java.util.Locale
 @Composable
 fun MytharaStatusBar(
     modifier: Modifier = Modifier,
+    /** Open the user's persona / insights screen (AboutMe).
+     *  Triggered by the Me icon in the teardrop menu. */
     onOpenAboutMe: () -> Unit = {},
-    /**
-     * Tap-on-rose action. Per user spec: "clicking on the star
-     * in that pill must open the Mythara chat screen from
-     * wherever it is clicked, even if on another app." The
-     * overlay variant routes this through MainActivity + the
-     * EXTRA_OPEN_ROUTE deep-link; the in-app variant navigates
-     * the local NavController to Routes.Chat.
-     */
+    /** Rose tap action (chat). Per user spec: rose → chat. */
     onRoseTap: () -> Unit = {},
-    /**
-     * Tap on the M● / I● API health dots opens the Usage
-     * screen so the user can see the underlying call stats /
-     * MiniMax sign-in.
-     */
+    /** Usage screen — M● / I● API health tiles route here. */
     onOpenUsage: () -> Unit = {},
-    /**
-     * When > 0, the pill is wrapped in a SOLID BLACK rectangle
-     * of this dp height at the very top of the screen — turns
-     * the entire upper portion black per user spec ("move it
-     * up and turn the complete upper portion black"). The
-     * camera cutout sits BEHIND this rectangle and disappears
-     * into the black; the pill is centred vertically inside.
-     * 0 (default) keeps the in-app pill on transparent bg with
-     * the wallpaper visible behind it.
-     */
+    /** People list. New teardrop menu launcher. */
+    onOpenPeople: () -> Unit = {},
+    /** Memory / lifeline timeline. New teardrop launcher. */
+    onOpenMemory: () -> Unit = {},
+    /** Cross-device tasks. New teardrop launcher. */
+    onOpenTasks: () -> Unit = {},
+    /** Settings. New teardrop launcher. */
+    onOpenSettings: () -> Unit = {},
+    /** Notification triage. New teardrop launcher. */
+    onOpenTriage: () -> Unit = {},
+    /** Legacy param — black-zone wrapper was retired. Kept for
+     *  API stability with existing callers; no longer affects
+     *  rendering. */
     blackZoneHeightDp: Int = 0,
 ) {
     val ctx = LocalContext.current
@@ -347,164 +343,232 @@ fun MytharaStatusBar(
     // adjacent to the pill, not as the pill's outer container.
     @Suppress("UNUSED_PARAMETER") val _bz = blackZoneHeightDp
     val pillBg = Color(0xCC000000)
-    // BoxWithConstraints so we can read the parent's actual
-    // max width as a Dp and animate the pill's width between
-    // a small circle (collapsed) and the full pill (expanded).
-    // Per user spec "make the minimized state down to a circle
-    // with the rose in the center, click on it should expand
-    // the status pill".
-    androidx.compose.foundation.layout.BoxWithConstraints(
+    // ───── New layout: Column with circle on top + teardrop
+    // menu drop-down ─────
+    //
+    // Per user spec: "make the menu items come below as a tear
+    // drop expanded menu. Clicking on any item must open the
+    // Mythara app with that screen from any app." The circle
+    // stays as the persistent collapsed state; tap expands a
+    // panel BELOW it containing status + Mythara-screen
+    // launchers. Each launcher fires its onOpen* callback
+    // (which, from overlay, deep-links MainActivity via
+    // EXTRA_OPEN_ROUTE).
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .padding(top = safeTopDp.dp),
-        contentAlignment = Alignment.TopCenter,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Linearly interpolate the pill width between the
-        // collapsed circle (= STRIP_HEIGHT_DP) and the parent's
-        // full available width as `widthFraction` animates
-        // 0 → 1.
-        val collapsedWidthDp = STRIP_HEIGHT_DP.dp
-        val fullWidthDp = maxWidth
-        val animatedWidthDp = collapsedWidthDp +
-            (fullWidthDp - collapsedWidthDp) * widthFraction
-        // Horizontal inner padding has to be 0 when collapsed
-        // (so the circle's rose sits cleanly in the middle of
-        // a 45×45 square — any horizontal padding would push
-        // the rose off-center). Ramps to 12dp when expanded
-        // so the chrome items have breathing room.
-        val innerHPad = (12.dp.value * widthFraction).dp
-        Row(
+        // ─── 1. THE CIRCLE — always visible ───
+        // Persistent collapsed state. Tap: if collapsed → expand
+        // the teardrop menu. If expanded → fire rose-tap (chat).
+        // Spin animation fires on every tap.
+        Box(
             modifier = Modifier
-                .width(animatedWidthDp)
-                .height(STRIP_HEIGHT_DP.dp)
-                .clip(RoundedCornerShape(STRIP_HEIGHT_DP.dp))
+                .size(STRIP_HEIGHT_DP.dp)
+                .clip(CircleShape)
                 .background(pillBg)
                 .clickable(
                     interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                     indication = null,
-                    onClick = onPillTap,
-                )
-                .padding(horizontal = innerHPad),
-            verticalAlignment = Alignment.CenterVertically,
-            // When collapsed (circle), the rose is the only
-            // child + we want it centered. SpaceBetween +
-            // Arrangement.Center collapse to Center when the
-            // Row has one child. When expanded, spread to
-            // bookend rose + MYTHARA around the cluster.
-            horizontalArrangement = if (expanded) Arrangement.spacedBy(33.dp)
-                else Arrangement.Center,
+                    onClick = {
+                        if (expanded) {
+                            spinRose()
+                            onRoseTap()
+                        } else {
+                            onPillTap()
+                        }
+                    },
+                ),
+            contentAlignment = Alignment.Center,
         ) {
-            // ROSE — always visible. Has its OWN clickable that
-            // consumes the tap before the outer pill click sees
-            // it, so a rose tap fires spin + onRoseTap (open
-            // Mythara chat) WITHOUT toggling the pill's expand
-            // state. Per user spec "clicking on the star in that
-            // pill must open the Mythara chat screen from wherever
-            // it is clicked, even if on another app."
-            Box(
-                modifier = Modifier
-                    .scale(pulseScale.value)
-                    .clickable(
-                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                        indication = null,
-                        onClick = {
-                            // Context-aware rose tap:
-                            //   - COLLAPSED (circle): expand the
-                            //     pill. Per user spec "click on
-                            //     [the circle] should expand the
-                            //     status pill".
-                            //   - EXPANDED: fire the chat shortcut
-                            //     (the original rose-tap → open
-                            //     chat semantic).
-                            // Either way: spin animation fires.
-                            if (expanded) {
-                                spinRose()
-                                onRoseTap()
-                            } else {
-                                onPillTap()
-                            }
-                        },
-                    ),
-            ) {
+            Box(modifier = Modifier.scale(pulseScale.value)) {
                 RoseMarkSmallSpinning(
                     sizeDp = ROSE_DP,
                     rotationDeg = rotation.value,
                     accent = null,
                 )
             }
+        }
 
-            // MIDDLE CLUSTER —
-            //   - EXPANDED: full chrome (clock + signal + M● + I●
-            //     + Me + 🎙 + battery)
-            //   - MINIMIZED (collapsed): condensed glance row of
-            //     time + wifi + phone signal + MiniMax dot, per
-            //     user spec "show time & MiniMax API status in
-            //     the pill in minimized state". WiFi + phone are
-            //     separate purple-neon icons so the user can
-            //     tell at a glance which transport is live.
-            if (showCluster) {
-                // EXPANDED-state cluster (full chrome).
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                ) {
-                    Text(
-                        text = nowFmt,
-                        color = MytharaColors.Fg,
-                        // 11sp → 17sp (1.5× scale with the pill).
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Medium,
-                    )
-                    WifiIcon(active = network.isWifi, accent = SIGNAL_COLOR, sizeDp = 14)
-                    PhoneSignalIcon(active = network.hasCellular, accent = SIGNAL_COLOR, sizeDp = 14)
-                    // M / I health dots — wrapped in clickable
-                    // boxes so tapping either one routes to the
-                    // Usage screen.
-                    Box(
-                        modifier = Modifier.clickable(
-                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                            indication = null,
-                            onClick = onOpenUsage,
-                        ),
-                    ) {
-                        HealthDot(label = "M", health = minimaxHealth, accent = MINIMAX_COLOR)
-                    }
-                    Box(
-                        modifier = Modifier.clickable(
-                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                            indication = null,
-                            onClick = onOpenUsage,
-                        ),
-                    ) {
-                        HealthDot(label = "I", health = imageHealth, accent = IMAGE_COLOR)
-                    }
-                    MeAvatar(onClick = onOpenAboutMe)
-                    PttButton()
-                    Text(
-                        text = "${battery.percent}%",
-                        color = MytharaColors.FgMute,
-                        fontSize = 15.sp,
-                    )
-                    CircularBatteryIcon(percent = battery.percent, charging = battery.charging)
-                }
-            }
-            // (No `else` branch — collapsed state shows only the
-            // rose in a circle. Per user spec: "minimized state
-            // down to a circle with the rose in the center.")
-
-            // RIGHT: MYTHARA wordmark — only when expanded.
-            // Hidden in the collapsed circle state so the rose
-            // is truly the only visible element.
-            if (showCluster) Text(
-                text = "MYTHARA",
-                color = RoseGeometry.Lavender,
-                // 10sp → 15sp + letter-spacing 1.5 → 2.25sp (1.5× scale).
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 2.25.sp,
+        // ─── 2. THE TEARDROP MENU — only when expanded ───
+        // Drops down from the circle with a slide-in fade.
+        // Each menu icon launches a specific Mythara screen
+        // (or fires ACTION_ASSIST for the PTT button).
+        androidx.compose.animation.AnimatedVisibility(
+            visible = expanded,
+            enter = androidx.compose.animation.fadeIn(
+                animationSpec = tween(EXPAND_DURATION_MS),
+            ) + androidx.compose.animation.expandVertically(
+                animationSpec = tween(EXPAND_DURATION_MS, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+            ),
+            exit = androidx.compose.animation.fadeOut(
+                animationSpec = tween(EXPAND_DURATION_MS / 2),
+            ) + androidx.compose.animation.shrinkVertically(
+                animationSpec = tween(EXPAND_DURATION_MS),
+            ),
+        ) {
+            TeardropMenu(
+                nowFmt = nowFmt,
+                network = network,
+                minimaxHealth = minimaxHealth,
+                imageHealth = imageHealth,
+                batteryPct = battery.percent,
+                charging = battery.charging,
+                onOpenAboutMe = onOpenAboutMe,
+                onOpenPeople = onOpenPeople,
+                onOpenMemory = onOpenMemory,
+                onOpenTasks = onOpenTasks,
+                onOpenUsage = onOpenUsage,
+                onOpenSettings = onOpenSettings,
+                onOpenTriage = onOpenTriage,
             )
         }
+    }
+}
+
+/**
+ * The teardrop drop-down menu that appears below the circle when
+ * the pill is expanded.
+ *
+ * Layout (top → bottom):
+ *   - Small connector / "tail" that visually links to the circle
+ *     above (just a tiny rounded notch)
+ *   - Top status row: time | wifi | phone | M● | I● | battery
+ *   - 2×4 launcher grid: Me · People · Memory · Tasks |
+ *                        Usage · Settings · Triage · 🎙 PTT
+ *
+ * Each launcher icon is a circular tap-target that fires its
+ * onOpen* callback. From the in-app pill the callbacks navigate
+ * the local NavController. From the overlay, the callbacks
+ * launch MainActivity with EXTRA_OPEN_ROUTE deep-linked to the
+ * matching route — which brings Mythara to the foreground on
+ * that specific screen, per user spec "clicking on any item
+ * must open the Mythara app with that screen from any app, it
+ * should bring Mythara app to foreground with that specific
+ * app screen."
+ */
+@Composable
+private fun TeardropMenu(
+    nowFmt: String,
+    network: NetworkSnapshot,
+    minimaxHealth: ApiStatusStore.ApiHealth,
+    imageHealth: ApiStatusStore.ApiHealth,
+    batteryPct: Int,
+    charging: Boolean,
+    onOpenAboutMe: () -> Unit,
+    onOpenPeople: () -> Unit,
+    onOpenMemory: () -> Unit,
+    onOpenTasks: () -> Unit,
+    onOpenUsage: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenTriage: () -> Unit,
+) {
+    val pillBg = Color(0xCC000000)
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        // Tiny connector "tail" — a 12×8 dp pill that bridges
+        // the circle (above) and the menu body (below), giving
+        // the whole thing a teardrop silhouette.
+        Box(
+            modifier = Modifier
+                .size(width = 12.dp, height = 8.dp)
+                .background(pillBg),
+        )
+        // Menu body.
+        Column(
+            modifier = Modifier
+                .clip(RoundedCornerShape(20.dp))
+                .background(pillBg)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            // Top status row.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = nowFmt,
+                    color = MytharaColors.Fg,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                WifiIcon(active = network.isWifi, accent = SIGNAL_COLOR, sizeDp = 14)
+                PhoneSignalIcon(active = network.hasCellular, accent = SIGNAL_COLOR, sizeDp = 14)
+                HealthDot(label = "M", health = minimaxHealth, accent = MINIMAX_COLOR)
+                HealthDot(label = "I", health = imageHealth, accent = IMAGE_COLOR)
+                Text(
+                    text = "$batteryPct%",
+                    color = MytharaColors.FgMute,
+                    fontSize = 13.sp,
+                )
+                CircularBatteryIcon(percent = batteryPct, charging = charging)
+            }
+            // Launcher row 1.
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                MenuLauncher(glyph = "👤", label = "me", onClick = onOpenAboutMe)
+                MenuLauncher(glyph = "👥", label = "people", onClick = onOpenPeople)
+                MenuLauncher(glyph = "📷", label = "memory", onClick = onOpenMemory)
+                MenuLauncher(glyph = "✓", label = "tasks", onClick = onOpenTasks)
+            }
+            // Launcher row 2.
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                MenuLauncher(glyph = "📊", label = "usage", onClick = onOpenUsage)
+                MenuLauncher(glyph = "⚙", label = "settings", onClick = onOpenSettings)
+                MenuLauncher(glyph = "🔔", label = "triage", onClick = onOpenTriage)
+                MenuLauncher(glyph = "🎙", label = "voice", onClick = {
+                    // ACTION_ASSIST — same path the PttButton uses
+                    // for the in-pill PTT. Future: route through
+                    // a dedicated onPttTap callback.
+                })
+            }
+        }
+    }
+}
+
+/**
+ * Single circular launcher icon inside the teardrop menu.
+ * Charple-bordered, dark fill, emoji glyph centred, tap fires
+ * onClick (which the caller wires to a specific Mythara screen
+ * launcher).
+ */
+@Composable
+private fun MenuLauncher(
+    glyph: String,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(MENU_LAUNCHER_DP.dp)
+                .clip(CircleShape)
+                .background(MytharaColors.Surface)
+                .border(1.5.dp, MytharaColors.Charple, CircleShape)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = glyph,
+                fontSize = 18.sp,
+            )
+        }
+        Text(
+            text = label,
+            color = MytharaColors.FgMute,
+            fontSize = 9.sp,
+        )
     }
 }
 
@@ -947,6 +1011,9 @@ private const val ROSE_DP = 33
  *  as the API health dots + Me avatar so the cluster reads
  *  uniformly. */
 private const val PTT_BUTTON_DP = 27
+
+/** Diameter of each launcher icon inside the teardrop menu. */
+private const val MENU_LAUNCHER_DP = 44
 
 /** Top padding from the screen top to the pill's top edge —
  *  user-specified flat value. 54 → 60 per user request. */

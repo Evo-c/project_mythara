@@ -210,19 +210,19 @@ fun MytharaRoot(
                         modifier = Modifier.fillMaxSize(),
                     ) {
                     MytharaStatusBar(
-                        // Pill sits below the system status bar
-                        // via safeTopDp positioning. No black-
-                        // zone wrapper (it broke overlay tap
-                        // dispatch — see the comment inside
-                        // MytharaStatusBar).
                         onRoseTap = {
                             nav.navigate(Routes.Chat) {
                                 launchSingleTop = true
                                 popUpTo(Routes.Chat) { inclusive = false }
                             }
                         },
-                        onOpenAboutMe = { nav.navigate(Routes.AboutMe) },
-                        onOpenUsage = { nav.navigate(Routes.Usage) },
+                        onOpenAboutMe = { nav.navigate(Routes.AboutMe) { launchSingleTop = true } },
+                        onOpenPeople = { nav.navigate(Routes.People) { launchSingleTop = true } },
+                        onOpenMemory = { nav.navigate(Routes.Memory) { launchSingleTop = true } },
+                        onOpenTasks = { nav.navigate(Routes.Tasks) { launchSingleTop = true } },
+                        onOpenUsage = { nav.navigate(Routes.Usage) { launchSingleTop = true } },
+                        onOpenSettings = { nav.navigate(Routes.Settings) { launchSingleTop = true } },
+                        onOpenTriage = { nav.navigate(Routes.Triage) { launchSingleTop = true } },
                     )
                     Box(
                         modifier = Modifier
