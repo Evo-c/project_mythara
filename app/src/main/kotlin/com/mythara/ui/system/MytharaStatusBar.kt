@@ -58,6 +58,9 @@ import com.mythara.me.MeProfileStore
 import com.mythara.ui.amulet.RoseGeometry
 import com.mythara.ui.theme.MytharaColors
 import dagger.hilt.android.EntryPointAccessors
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -202,154 +205,160 @@ fun MytharaStatusBar(
         else -> PIXEL_PINHOLE_FLOOR_DP.toFloat()
     }
 
-    // Consolidated layout — the entire status strip is ONE slim
-    // island-style pill that holds ALL the chrome:
-    //   - LEFT:  rose (tap → spin animation, same as DynamicIsland)
-    //   - MIDDLE: clock | signal dots | M● I● | Me | PTT mic |
-    //             battery%, all evenly spaced, weight(1f) so it
-    //             takes the slack between the rose + wordmark
-    //   - RIGHT: MYTHARA wordmark
+    // ───── Collapsed ↔ Expanded Dynamic Island state machine ─────
     //
-    // Per user spec ("move all the status bar content INTO the
-    // island; centre the rose + text, keep same width, decrease
-    // height like a regular status bar"). The pill is now full-
-    // width + thin (~30dp), with the brand mark bracketing the
-    // utility content.
-    // This pill IS the Dynamic Island. Not a "status bar" in the
-    // old Android-chrome sense — it's the floating brand-marked
-    // pill the user identifies with, that happens to also carry
-    // the status chrome. Side margins (16dp) + rounded ends
-    // (clip to pill height) keep it reading as a discrete
-    // floating element with the wallpaper visible on either side,
-    // rather than an edge-to-edge system bar.
-    val pillBg = Color(0xCC000000)
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(top = safeTopDp.dp, start = 16.dp, end = 16.dp)
-            .height(STRIP_HEIGHT_DP.dp)
-            .clip(RoundedCornerShape(STRIP_HEIGHT_DP.dp))
-            .background(pillBg)
-            .padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        // Inter-child spacing widened from 8dp → 33dp per user
-        // request "widen the gap between rose and MYTHARA by
-        // 0.8 cm". 0.8 cm ≈ 50 dp total; with two gaps
-        // (rose↔middle + middle↔MYTHARA) splitting the added
-        // space symmetrically lands ~25 dp extra each side
-        // (8 + 25 = 33). The middle cluster's weight(1f)
-        // compresses accordingly so the centre items just
-        // tighten up — rose + MYTHARA get more visible
-        // separation without the cluster overflowing.
-        horizontalArrangement = Arrangement.spacedBy(33.dp),
-    ) {
-        // LEFT: the rose. Tap → spin animation + clear sink.
-        // Delegates to the same SpinningRoseTap helper used by
-        // the standalone DynamicIsland composable (kept here so
-        // the in-pill rose still feels like the brand mark).
-        SpinningRoseTap(sizeDp = ROSE_DP, modifier = Modifier)
+    // Default state: SMALL pill, just rose + MYTHARA, ~35% screen
+    // width. Centred at the top, below the cutout.
+    //
+    // Tap the pill: rose spins, pill animates to FULL width, and
+    // the status indicators (clock, signal, M/I, Me, PTT, battery)
+    // fade in inside the expanded pill. The expanded pill IS the
+    // status bar — same chrome the user used to see in the always-
+    // visible row, just gated behind a tap.
+    //
+    // Auto-collapse after AUTO_COLLAPSE_MS so a user who taps to
+    // glance doesn't have to tap again to reclaim the space.
+    var expanded by remember { mutableStateOf(false) }
+    val widthFraction by animateFloatAsState(
+        targetValue = if (expanded) 1f else COLLAPSED_WIDTH_FRACTION,
+        animationSpec = tween(
+            durationMillis = EXPAND_DURATION_MS,
+            easing = androidx.compose.animation.core.FastOutSlowInEasing,
+        ),
+        label = "pillWidth",
+    )
+    // Cluster items render only once the pill is wide enough to
+    // hold them comfortably (≥85% of full width). Without the
+    // gate they'd flash in INSIDE a still-narrow pill mid-
+    // animation, which reads as a glitch.
+    val showCluster = widthFraction >= 0.85f
 
-        // MIDDLE — utility cluster. weight(1f) so it absorbs
-        // the slack between the rose on the left and the
-        // MYTHARA wordmark on the right; Arrangement.SpaceEvenly
-        // distributes the items horizontally.
-        Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            Text(
-                text = nowFmt,
-                color = MytharaColors.Fg,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium,
-            )
-            SignalDots(litCount = network.bars, accent = SIGNAL_COLOR)
-            HealthDot(label = "M", health = minimaxHealth, accent = MINIMAX_COLOR)
-            HealthDot(label = "I", health = imageHealth, accent = IMAGE_COLOR)
-            MeAvatar(onClick = onOpenAboutMe)
-            PttButton()
-            Text(
-                text = "${battery.percent}%",
-                color = MytharaColors.FgMute,
-                fontSize = 10.sp,
-            )
-            CircularBatteryIcon(percent = battery.percent, charging = battery.charging)
+    // Auto-collapse timer — resets every time `expanded` is
+    // toggled (LaunchedEffect cancels + relaunches on key
+    // change). Tap during the expanded window resets to a fresh
+    // window via the user.
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            kotlinx.coroutines.delay(AUTO_COLLAPSE_MS)
+            expanded = false
         }
-
-        // RIGHT: MYTHARA wordmark.
-        Text(
-            text = "MYTHARA",
-            color = RoseGeometry.Lavender,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.5.sp,
-        )
     }
-}
 
-/**
- * The rose mark with the same tap-to-spin animation the standalone
- * DynamicIsland uses. Lifted into MytharaStatusBar so the
- * consolidated pill keeps the user's "rose spins on touch" ask
- * even though we dropped the separate DynamicIsland composable
- * from the layout. Reads insight accent from the sink so a fresh
- * insight tints the rose without changing other chrome.
- */
-@Composable
-private fun SpinningRoseTap(sizeDp: Int, modifier: Modifier = Modifier) {
+    // Rose spin + scale-pulse animation, fired on every pill
+    // tap regardless of whether the tap is expanding or
+    // collapsing. SinkClear runs alongside so a fresh insight
+    // gets acknowledged when the user interacts with the pill.
     val scope = rememberCoroutineScope()
     val rotation = remember { androidx.compose.animation.core.Animatable(0f) }
     val pulseScale = remember { androidx.compose.animation.core.Animatable(1f) }
-    val insight by androidx.compose.runtime.produceState<DynamicIslandSink.Insight?>(
-        initialValue = null, key1 = Unit,
-    ) {
-        while (true) {
-            value = DynamicIslandSink.current()
-            kotlinx.coroutines.delay(500L)
+    val onPillTap: () -> Unit = {
+        expanded = !expanded
+        DynamicIslandSink.clear()
+        scope.launch {
+            rotation.snapTo(0f)
+            rotation.animateTo(
+                360f,
+                androidx.compose.animation.core.tween(
+                    durationMillis = 700,
+                    easing = androidx.compose.animation.core.LinearOutSlowInEasing,
+                ),
+            )
+            rotation.snapTo(0f)
+        }
+        scope.launch {
+            pulseScale.snapTo(1f)
+            pulseScale.animateTo(1.12f, androidx.compose.animation.core.tween(140))
+            pulseScale.animateTo(1f, androidx.compose.animation.core.tween(220))
         }
     }
+
+    // ───── Pill layout ─────
+    val pillBg = Color(0xCC000000)
     Box(
         modifier = modifier
-            .size(sizeDp.dp)
-            .clickable(
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                indication = null,
-                onClick = {
-                    DynamicIslandSink.clear()
-                    scope.launch {
-                        rotation.snapTo(0f)
-                        rotation.animateTo(
-                            360f,
-                            androidx.compose.animation.core.tween(
-                                durationMillis = 700,
-                                easing = androidx.compose.animation.core.LinearOutSlowInEasing,
-                            ),
-                        )
-                        rotation.snapTo(0f)
-                    }
-                    scope.launch {
-                        pulseScale.snapTo(1f)
-                        pulseScale.animateTo(1.12f, androidx.compose.animation.core.tween(140))
-                        pulseScale.animateTo(1f, androidx.compose.animation.core.tween(220))
-                    }
-                },
-            ),
-        contentAlignment = Alignment.Center,
+            .fillMaxWidth()
+            .padding(top = safeTopDp.dp),
+        contentAlignment = Alignment.TopCenter,
     ) {
-        Box(modifier = Modifier.scale(pulseScale.value)) {
-            RoseMarkSmallSpinning(
-                sizeDp = sizeDp,
-                rotationDeg = rotation.value,
-                accent = insight?.accent,
+        Row(
+            modifier = Modifier
+                .fillMaxWidth(fraction = widthFraction)
+                .height(STRIP_HEIGHT_DP.dp)
+                .clip(RoundedCornerShape(STRIP_HEIGHT_DP.dp))
+                .background(pillBg)
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    onClick = onPillTap,
+                )
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            // Tighter spacing when collapsed (rose + MYTHARA
+            // need to fit a ~35% pill), wider when expanded
+            // (matches the previous full-bar layout).
+            horizontalArrangement = Arrangement.spacedBy(if (expanded) 33.dp else 12.dp),
+        ) {
+            // ROSE — always visible. Rotation + scale come from
+            // the shared animation state above so the spin fires
+            // on every tap (collapse OR expand).
+            Box(modifier = Modifier.scale(pulseScale.value)) {
+                RoseMarkSmallSpinning(
+                    sizeDp = ROSE_DP,
+                    rotationDeg = rotation.value,
+                    accent = null,
+                )
+            }
+
+            // MIDDLE CLUSTER — only when expanded + width
+            // animation has caught up. Wrapped in a weighted
+            // Row so it absorbs the slack between rose + MYTHARA
+            // ONLY when visible; when collapsed it's gone
+            // entirely so the rose + MYTHARA sit close.
+            if (showCluster) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                ) {
+                    Text(
+                        text = nowFmt,
+                        color = MytharaColors.Fg,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    SignalDots(litCount = network.bars, accent = SIGNAL_COLOR)
+                    HealthDot(label = "M", health = minimaxHealth, accent = MINIMAX_COLOR)
+                    HealthDot(label = "I", health = imageHealth, accent = IMAGE_COLOR)
+                    MeAvatar(onClick = onOpenAboutMe)
+                    PttButton()
+                    Text(
+                        text = "${battery.percent}%",
+                        color = MytharaColors.FgMute,
+                        fontSize = 10.sp,
+                    )
+                    CircularBatteryIcon(percent = battery.percent, charging = battery.charging)
+                }
+            }
+
+            // RIGHT: MYTHARA wordmark — always visible.
+            Text(
+                text = "MYTHARA",
+                color = RoseGeometry.Lavender,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.5.sp,
             )
         }
     }
 }
 
-/** Small spinning rose used by [SpinningRoseTap]. Mirror of
- *  DynamicIsland's RoseMarkSpinning kept here so the pill is
- *  self-contained. */
+/** Small spinning rose painted inside the Dynamic Island. The
+ *  spin animation state (rotation + scale-pulse) lives at the
+ *  call-site in [MytharaStatusBar] so a SINGLE tap on the pill
+ *  drives both the expand-collapse state machine AND the spin —
+ *  if the rose owned its own tap handler too, we'd double-fire.
+ *  Mirror of DynamicIsland's internal RoseMarkSpinning kept here
+ *  so the pill is self-contained. */
 @Composable
 private fun RoseMarkSmallSpinning(
     sizeDp: Int,
@@ -672,6 +681,24 @@ private const val ROSE_DP = 22
 /** PTT mic button diameter. Same scale as the API health dots
  *  + Me avatar so the cluster reads uniformly. */
 private const val PTT_BUTTON_DP = 18
+
+/** Width fraction of the pill when collapsed (rose + MYTHARA
+ *  only, no status cluster). 0.32 ≈ 1/3 of the screen — wide
+ *  enough to fit the rose + the MYTHARA wordmark with the
+ *  small inter-element padding, narrow enough that the pill
+ *  reads as a discrete floating island. */
+private const val COLLAPSED_WIDTH_FRACTION = 0.32f
+
+/** Expand-collapse animation duration. 350ms is the sweet spot
+ *  — slow enough that the user perceives the growth as
+ *  intentional, fast enough that it doesn't feel sluggish. */
+private const val EXPAND_DURATION_MS = 350
+
+/** Auto-collapse delay. The user taps to glance at the status
+ *  chrome; after this many ms with no further interaction we
+ *  shrink back to the small pill on our own. 6s is a typical
+ *  "scan-and-look-away" window. */
+private const val AUTO_COLLAPSE_MS = 6_000L
 private const val SIGNAL_BAR_COUNT = 4
 private const val BATTERY_ICON_DP = 16
 private const val ME_AVATAR_DP = 18
