@@ -301,59 +301,6 @@ fun PopupAmulet(
             }
         }
 
-        // Glide-gesture overlay — captures the finger position
-        // while pressing the rose area. Doesn't consume the
-        // scrim's clickable since it sits BELOW the scrim is
-        // not exactly true; we need this BEFORE the scrim Box
-        // because Compose's pointer-input order is z-order.
-        // We sit ABOVE the scrim but BELOW the chips so chip
-        // taps still take precedence. fillMaxSize so a drag
-        // that strays off the amulet still tracks correctly.
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(activePage) {
-                    awaitEachGesture {
-                        // Wait for a finger to come down. If it
-                        // lands on the rose (within rose radius
-                        // of cx,cy), begin glide tracking.
-                        val down = awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Main)
-                        val dx = down.position.x - cx
-                        val dy = down.position.y - cy
-                        if (hypot(dx, dy) > amuletHalfPx + 8f) {
-                            // Down outside the rose — let
-                            // standard tap path (chip taps,
-                            // scrim) handle it. Do not consume.
-                            return@awaitEachGesture
-                        }
-                        // Started on the rose — begin glide.
-                        down.consume()
-                        fingerPos = down.position
-                        // Track until release.
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull() ?: break
-                            fingerPos = change.position
-                            change.consume()
-                            if (change.changedToUp()) break
-                            if (!change.pressed) break
-                        }
-                        // On release: fire the nearest chip's
-                        // action if any.
-                        val idx = nearestChipIdx
-                        if (idx >= 0) {
-                            activePage.chips[idx].onTap()
-                        } else {
-                            // Glide released without a chip
-                            // target — treat as a center tap
-                            // (cycle to next page).
-                            pageIndex = (pageIndex + 1) % pages.size
-                        }
-                        fingerPos = null
-                    }
-                },
-        )
-
         // Render the chips on top of the Canvas overlay so they
         // are tappable + their content (glyph / icon / caption)
         // renders crisply.
@@ -415,10 +362,69 @@ fun PopupAmulet(
             RoseAmulet(
                 modifier = Modifier.size(amuletSizeDp.dp),
                 onTap = {
+                    // Routed through the glide-trigger overlay
+                    // below, but kept as a fallback in case the
+                    // overlay misses (e.g. very fast tap).
                     pageIndex = (pageIndex + 1) % pages.size
                 },
             )
         }
+
+        // Glide-gesture overlay — captures the finger position
+        // while pressing the rose area. Sized to JUST cover the
+        // rose (not fillMaxSize) so taps outside the rose zone
+        // fall through to the scrim's clickable for dismissal.
+        // Rendered AFTER the rose so this Box sits on top in z
+        // order — the rose's own clickable is shadowed within
+        // this zone, which is what we want (we route taps here).
+        // Once a finger is acquired, Compose continues tracking
+        // globally even after it strays outside the box, so the
+        // glide-to-chip gesture works even with a small trigger.
+        // fingerPos is translated back into root-Box-local coords
+        // by adding the box origin so nearestChipIdx aligns with
+        // chipCenters' coordinate space.
+        val triggerHalfPx = amuletHalfPx + 8f
+        val triggerSizePx = triggerHalfPx * 2f
+        val triggerOriginX = cx - triggerHalfPx
+        val triggerOriginY = cy - triggerHalfPx
+        val triggerLeftDp = with(density) { triggerOriginX.toDp() }
+        val triggerTopDp = with(density) { triggerOriginY.toDp() }
+        val triggerSizeDp = with(density) { triggerSizePx.toDp() }
+        Box(
+            modifier = Modifier
+                .offset(x = triggerLeftDp, y = triggerTopDp)
+                .size(triggerSizeDp)
+                .pointerInput(activePage) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        down.consume()
+                        fingerPos = Offset(
+                            down.position.x + triggerOriginX,
+                            down.position.y + triggerOriginY,
+                        )
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull() ?: break
+                            fingerPos = Offset(
+                                change.position.x + triggerOriginX,
+                                change.position.y + triggerOriginY,
+                            )
+                            change.consume()
+                            if (change.changedToUp()) break
+                            if (!change.pressed) break
+                        }
+                        val idx = nearestChipIdx
+                        if (idx >= 0) {
+                            activePage.chips[idx].onTap()
+                        } else {
+                            // Released without a chip target —
+                            // treat as a tap-on-rose (cycle).
+                            pageIndex = (pageIndex + 1) % pages.size
+                        }
+                        fingerPos = null
+                    }
+                },
+        )
 
         // Page label + dot pagination indicator below the rose.
         val labelTopDp = with(density) { (cy + amuletHalfPx).toDp() } + 6.dp
