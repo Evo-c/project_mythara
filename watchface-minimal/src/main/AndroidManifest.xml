@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Mythara MINIMAL watch face — Watch Face Format.
+  Resource-only sibling of :watchface (Mythara Tactical). Lives in its
+  own APK so the user picks one or the other from the system watch-face
+  picker.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature android:name="android.hardware.type.watch" />
+
+    <application
+        android:label="@string/watch_face_name"
+        android:hasCode="false"
+        android:icon="@drawable/preview">
+
+        <!-- Standalone — runs on any watch, paired with any phone (or none). -->
+        <meta-data
+            android:name="com.google.android.wearable.standalone"
+            android:value="true" />
+
+        <!-- Declares this APK as a Watch Face Format bundle. v2 = Wear OS 5+. -->
+        <property
+            android:name="com.google.wear.watchface.format.version"
+            android:value="2" />
+    </application>
+</manifest>

@@ -25,20 +25,24 @@ export JAVA_HOME="${JAVA_HOME:-/opt/homebrew/opt/openjdk@17}"
 APP_APK="app/build/outputs/apk/debug/app-debug.apk"
 WEAR_APK="wear/build/outputs/apk/debug/wear-debug.apk"
 WF_APK="watchface/build/outputs/apk/debug/watchface-debug.apk"
+WF_MIN_APK="watchface-minimal/build/outputs/apk/debug/watchface-minimal-debug.apk"
 WF_ID="com.mythara.watchface.debug"
 
-echo "==> Building debug APKs (:app :wear :watchface)"
-./gradlew :app:assembleDebug :wear:assembleDebug :watchface:assembleDebug
+echo "==> Building debug APKs (:app :wear :watchface :watchface-minimal)"
+./gradlew :app:assembleDebug :wear:assembleDebug :watchface:assembleDebug :watchface-minimal:assembleDebug
 
 found=0
 for dev in $("$ADB" devices | awk 'NR>1 && $2=="device" {print $1}'); do
     found=1
     kind=$("$ADB" -s "$dev" shell getprop ro.build.characteristics | tr -d '\r')
     if [[ "$kind" == *watch* ]]; then
-        echo "==> $dev (watch): installing :wear + :watchface"
+        echo "==> $dev (watch): installing :wear + :watchface + :watchface-minimal"
         "$ADB" -s "$dev" install -r "$WEAR_APK"
         "$ADB" -s "$dev" install -r "$WF_APK"
-        # set Mythara Tactical as the active face (debug surface)
+        "$ADB" -s "$dev" install -r "$WF_MIN_APK"
+        # set Mythara Tactical as the default active face (debug surface).
+        # User can switch to Mythara Minimal via the watch's face picker
+        # (long-press the face → swipe to "Mythara Minimal" → tap).
         "$ADB" -s "$dev" shell am broadcast \
             -a com.google.android.wearable.app.DEBUG_SURFACE \
             --es operation set-watchface --es watchFaceId "$WF_ID"
