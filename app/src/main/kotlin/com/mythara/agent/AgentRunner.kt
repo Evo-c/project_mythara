@@ -70,6 +70,7 @@ class AgentRunner @Inject constructor(
      *  here keeps the gating in one place — both the TTS path and the
      *  ChatViewModel's tone-playback path observe the same flag. */
     private val musicMode: com.mythara.data.MusicModeStore,
+    private val autoContinue: com.mythara.agent.todo.AgentAutoContinueController,
 ) {
     /**
      * Process-wide scope. SupervisorJob so one failing turn doesn't
@@ -91,6 +92,19 @@ class AgentRunner @Inject constructor(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
     val turnEvents: SharedFlow<AgentLoop.Turn> = _turnEvents.asSharedFlow()
+
+    init {
+        // Bind auto-continue: the controller calls back here to
+        // submit the next item from AgentTodoStore after a turn
+        // finishes (with a quiet window so we don't steal the
+        // floor from the user). Init lives BELOW the turnEvents
+        // property so it's already initialized by the time
+        // start(turnEvents) consumes it.
+        autoContinue.bindSubmitCallback { promptText ->
+            submit(text = promptText, fromVoice = false)
+        }
+        autoContinue.start(turnEvents)
+    }
 
     /** True when any agent loop is mid-flight. */
     private val _busy = MutableStateFlow(false)
@@ -133,6 +147,14 @@ class AgentRunner @Inject constructor(
         // user's own direct turns; auto-triaging the notification
         // stream out loud is noise.
         val fromNotification = text.startsWith(AgentLoop.NOTIF_PREFIX)
+        // Manual turn → reset the auto-continue cap so the agent
+        // can pick up another batch of todo items after THIS
+        // manual turn settles. Auto-prompted turns (text starts
+        // with "[auto-continue]") don't reset — that'd defeat
+        // the cap's runaway protection.
+        if (!text.startsWith("[auto-continue]")) {
+            autoContinue.noteManualSubmit()
+        }
         scope.launch {
             beginTurn()
             // Live wallpaper acknowledgement — fires the moment the
@@ -161,10 +183,42 @@ class AgentRunner @Inject constructor(
                     if (!mood.isNullOrBlank()) MoodSink.update(mood)
                 }.onFailure { Log.w(TAG, "mood track failed: ${it.message}") }
 
+                // Status-bar Dynamic Island acknowledgement —
+                // push "thinking…" the moment the user submits.
+                com.mythara.ui.system.DynamicIslandSink.push(
+                    text = "thinking…",
+                    accent = com.mythara.ui.theme.MytharaColors.Charple,
+                    ttlMs = 30_000L,
+                )
                 agent.submit(text, fromVoice = fromVoice).collect { turn ->
                     _turnEvents.tryEmit(turn)
-                    if (turn is AgentLoop.Turn.Finished) {
-                        deliverFinished(turn, fromNotification)
+                    // Surface tool starts + finished states in the
+                    // pill so the user can glance up and see what
+                    // Mythara is doing without opening the app.
+                    when (turn) {
+                        is AgentLoop.Turn.ToolStart -> {
+                            com.mythara.ui.system.DynamicIslandSink.push(
+                                text = "running ${turn.name}",
+                                accent = com.mythara.ui.theme.MytharaColors.Mustard,
+                                ttlMs = 8_000L,
+                            )
+                        }
+                        is AgentLoop.Turn.Finished -> {
+                            com.mythara.ui.system.DynamicIslandSink.push(
+                                text = "done · ${turn.iterations} steps",
+                                accent = com.mythara.ui.theme.MytharaColors.Bok,
+                                ttlMs = 4_000L,
+                            )
+                            deliverFinished(turn, fromNotification)
+                        }
+                        is AgentLoop.Turn.Error -> {
+                            com.mythara.ui.system.DynamicIslandSink.push(
+                                text = "error · ${turn.message.take(20)}",
+                                accent = com.mythara.ui.theme.MytharaColors.Sriracha,
+                                ttlMs = 6_000L,
+                            )
+                        }
+                        else -> { /* Delta streams + ToolEnd are already in chat */ }
                     }
                 }
             } catch (t: Throwable) {

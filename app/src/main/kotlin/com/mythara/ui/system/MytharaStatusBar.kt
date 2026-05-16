@@ -187,24 +187,16 @@ fun MytharaStatusBar(modifier: Modifier = Modifier) {
             SignalDots(litCount = network.bars, accent = SIGNAL_COLOR)
         }
 
-        // Centre cluster: small rose mark + "MYTHARA" text. The
-        // strip itself is positioned BELOW the pinhole vertical
-        // line via the 22dp top push above, so this content sits
-        // CLEAR of the camera cutout rather than under it.
-        Row(
+        // Centre: iPhone Dynamic Island-style pill that idles as
+        // the rose + MYTHARA wordmark and morphs to surface
+        // momentary insights pushed into [DynamicIslandSink]
+        // (agent thinking, fresh insight from phone, next
+        // reminder countdown, HR alert, etc.). Tap → triggers a
+        // brief animation (rose spins + pill pulses) and clears
+        // the active insight.
+        DynamicIsland(
             modifier = Modifier.align(Alignment.Center),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            RoseMarkSmall(sizeDp = 14)
-            Text(
-                text = "MYTHARA",
-                color = RoseGeometry.Lavender,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.5.sp,
-            )
-        }
+        )
 
         // Right cluster: API health dots + battery percent + circular
         // battery icon. Tight cluster so it stays inside the strip.
