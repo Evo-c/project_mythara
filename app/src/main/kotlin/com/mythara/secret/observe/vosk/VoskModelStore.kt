@@ -221,10 +221,31 @@ class VoskModelStore @Inject constructor(@ApplicationContext private val ctx: Co
         if (zipTmp.exists()) zipTmp.delete()
         if (marker.exists()) marker.delete()
 
-        val req = Request.Builder().url(lang.modelUrl).build()
+        // Try each mirror in order. First success wins. We record the
+        // most-recent failure and rethrow it if EVERY mirror dies —
+        // that way the user sees a real error message instead of a
+        // generic "all mirrors failed".
+        var lastError: Throwable? = null
+        for ((index, url) in lang.modelUrls.withIndex()) {
+            try {
+                Log.d(TAG, "fetching ${lang.code} from mirror ${index + 1}/${lang.modelUrls.size}: $url")
+                downloadFrom(lang, url, zipTmp, marker)
+                return
+            } catch (t: Throwable) {
+                lastError = t
+                Log.w(TAG, "mirror ${index + 1} failed for ${lang.code}: ${t.message}")
+                runCatching { if (zipTmp.exists()) zipTmp.delete() }
+                runCatching { if (marker.exists()) marker.delete() }
+            }
+        }
+        throw lastError ?: error("no mirrors configured for ${lang.code}")
+    }
+
+    private fun downloadFrom(lang: Language, url: String, zipTmp: File, marker: File) {
+        val req = Request.Builder().url(url).build()
         http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) error("HTTP ${resp.code} fetching ${lang.code} model")
-            val body = resp.body ?: error("empty body fetching ${lang.code} model")
+            if (!resp.isSuccessful) error("HTTP ${resp.code} fetching ${lang.code} from $url")
+            val body = resp.body ?: error("empty body fetching ${lang.code} from $url")
             val total = body.contentLength().coerceAtLeast(0L)
             _activeState.value = State.Downloading(lang, 0, total)
             body.byteStream().use { input ->
@@ -247,15 +268,13 @@ class VoskModelStore @Inject constructor(@ApplicationContext private val ctx: Co
             }
             val downloaded = zipTmp.length()
             if (total > 0 && downloaded != total) {
-                runCatching { zipTmp.delete() }
                 error("download truncated: got $downloaded, expected $total")
             }
             if (downloaded < MIN_VALID_BYTES) {
-                runCatching { zipTmp.delete() }
                 error("download too small ($downloaded bytes) — server probably returned an error page")
             }
             marker.writeText(downloaded.toString())
-            Log.d(TAG, "downloaded ${lang.code}: $downloaded bytes")
+            Log.d(TAG, "downloaded ${lang.code}: $downloaded bytes from $url")
         }
     }
 

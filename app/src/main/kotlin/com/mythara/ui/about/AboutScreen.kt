@@ -12,13 +12,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.displayCutout
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -70,122 +70,118 @@ fun AboutScreen(
     }
 
     // Phase C — MytharaScaffold provides the top inset + 44 dp
-    // header (← back / ◇ about). The body is a Box so we can
-    // anchor the wordmark + tagline at viewport CENTER (per
-    // user request — the brand mark + secret-unlock target
-    // should sit in the middle of the screen, not hugged to
-    // the top) while the panels live in a scrollable bottom
-    // strip beneath.
-    Box(
+    // header (← back / ◇ about). The body is a single scrollable
+    // Column. We pre-load it with a top spacer that's ~32% of
+    // the viewport height so the FIRST item (the MYTHARA brand
+    // mark + secret-unlock target) lands at roughly the screen's
+    // vertical middle on initial render. The tagline + panels
+    // then flow naturally BELOW the wordmark — user scrolls down
+    // a touch to read past the centred logo.
+    //
+    // Why a spacer instead of Alignment.Center + a separate
+    // panels strip: the previous "Box with centred wordmark +
+    // BottomCenter panels strip" anchored panels to the bottom
+    // edge, leaving a large blank gap between the wordmark and
+    // the first panel. The user called this "way too down". A
+    // single scrolling Column keeps the panels visually adjacent
+    // to the wordmark.
+    val configuration = LocalConfiguration.current
+    val viewportTopPushDp = (configuration.screenHeightDp * WORDMARK_VIEWPORT_FRACTION).dp
+
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(WindowInsets.navigationBars.asPaddingValues()),
+            .padding(WindowInsets.navigationBars.asPaddingValues())
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // Push the wordmark down to viewport centre.
+        Spacer(Modifier.height(viewportTopPushDp))
 
-        // ── Wordmark + tagline — vertically centered ────────────
-        // Alignment.Center anchors this Column to the geometric
-        // middle of the body. windowInsetsPadding(displayCutout)
-        // ensures it dodges any device cutout that intersects
-        // its bounds (foldable inner displays etc.) — though at
-        // viewport center the wordmark is well clear of any
-        // punch-hole on Pixel hardware.
-        Column(
+        // ── Triple-tap target — the MYTHARA wordmark ────────────
+        // displayCutout inset keeps the brand mark off any
+        // foldable inner-display cutout that intersects centre.
+        Box(
             modifier = Modifier
-                .align(Alignment.Center)
                 .fillMaxWidth()
                 .windowInsetsPadding(WindowInsets.displayCutout)
-                .padding(horizontal = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            val now = System.currentTimeMillis()
+                            if (tapCount == 0 || (now - firstTapMs) > TRIPLE_TAP_WINDOW_MS) {
+                                firstTapMs = now
+                                tapCount = 1
+                            } else {
+                                tapCount += 1
+                            }
+                        },
+                    )
+                },
+            contentAlignment = Alignment.Center,
         ) {
-            // Triple-tap target — the inline wordmark.
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onTap = {
-                                val now = System.currentTimeMillis()
-                                if (tapCount == 0 || (now - firstTapMs) > TRIPLE_TAP_WINDOW_MS) {
-                                    firstTapMs = now
-                                    tapCount = 1
-                                } else {
-                                    tapCount += 1
-                                }
-                            },
-                        )
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                MytharaWordmarkInline(fontSize = 28.sp)
-            }
-            Spacer(Modifier.height(8.dp))
+            MytharaWordmarkInline(fontSize = 28.sp)
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // Tagline — sits directly beneath the wordmark.
+        Text(
+            text = "${Glyph.AccentBar} field intelligence in your pocket.",
+            style = MaterialTheme.typography.bodySmall.copy(
+                color = MytharaColors.FgDim, letterSpacing = 1.sp,
+            ),
+        )
+
+        Spacer(Modifier.height(28.dp))
+
+        // ── Panels flow directly below the tagline ──────────────
+        Panel("version") {
             Text(
-                text = "${Glyph.AccentBar} field intelligence in your pocket.",
-                style = MaterialTheme.typography.bodySmall.copy(
-                    color = MytharaColors.FgDim, letterSpacing = 1.sp,
-                ),
+                "0.0.1-debug · MiniMax-M2 family",
+                color = MytharaColors.Fg, style = MaterialTheme.typography.bodyMedium,
             )
         }
 
-        // ── Panels — bottom 45% of the body, scrollable ─────────
-        // Anchored to BottomCenter so they fill the lower portion
-        // of the screen without overlapping the centered wordmark
-        // above. fillMaxHeight(0.45f) gives a fixed slot; long
-        // panel content scrolls inside.
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .fillMaxHeight(BOTTOM_PANELS_FRACTION)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
-            Panel("version") {
-                Text(
-                    "0.0.1-debug · MiniMax-M2 family",
-                    color = MytharaColors.Fg, style = MaterialTheme.typography.bodyMedium,
-                )
-            }
+        Spacer(Modifier.height(12.dp))
 
-            Spacer(Modifier.height(12.dp))
-
-            Panel("privacy") {
-                Text(
-                    "Mythara has no backend, no telemetry, no analytics. The only network calls are to the MiniMax endpoint you configured and (if enabled) your GitHub memory repo.",
-                    color = MytharaColors.FgMute, style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "API keys and the device-secret password stay on the phone, encrypted at rest. Chat history, learnings, and non-secret settings can sync to a private GitHub repo you control.",
-                    color = MytharaColors.FgMute, style = MaterialTheme.typography.bodySmall,
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            Panel("created by") {
-                Text(
-                    "Mythara is your personal field intelligence agent.",
-                    color = MytharaColors.Fg, style = MaterialTheme.typography.bodyMedium,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Built by Ankur (Creator) using Lumi — the powerful mother-ship AI platform Ankur built at CES.",
-                    color = MytharaColors.FgMute, style = MaterialTheme.typography.bodySmall,
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            Panel("credits") {
-                Text(
-                    "MiniMax · Charmbracelet (Crush aesthetic) · JetBrains Mono · AndroidX · Shizuku",
-                    color = MytharaColors.FgMute, style = MaterialTheme.typography.bodySmall,
-                )
-            }
-
-            Spacer(Modifier.height(24.dp))
+        Panel("privacy") {
+            Text(
+                "Mythara has no backend, no telemetry, no analytics. The only network calls are to the MiniMax endpoint you configured and (if enabled) your GitHub memory repo.",
+                color = MytharaColors.FgMute, style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "API keys and the device-secret password stay on the phone, encrypted at rest. Chat history, learnings, and non-secret settings can sync to a private GitHub repo you control.",
+                color = MytharaColors.FgMute, style = MaterialTheme.typography.bodySmall,
+            )
         }
+
+        Spacer(Modifier.height(12.dp))
+
+        Panel("created by") {
+            Text(
+                "Mythara is your personal field intelligence agent.",
+                color = MytharaColors.Fg, style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Built by Ankur (Creator) using Lumi — the powerful mother-ship AI platform Ankur built at CES.",
+                color = MytharaColors.FgMute, style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Panel("credits") {
+            Text(
+                "MiniMax · Charmbracelet (Crush aesthetic) · JetBrains Mono · AndroidX · Shizuku",
+                color = MytharaColors.FgMute, style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
+        Spacer(Modifier.height(40.dp))
     }
 }
 
@@ -211,8 +207,9 @@ private fun Panel(title: String, body: @Composable () -> Unit) {
 private const val TRIPLE_TAP_WINDOW_MS = 1500L
 private const val TRIPLE_TAP_REQUIRED = 3
 
-/** Fraction of the body height reserved for the scrollable
- *  panels strip at the bottom. The remaining ~55% above is
- *  empty space surrounding the centered wordmark, anchoring
- *  the brand mark visually at the screen's middle. */
-private const val BOTTOM_PANELS_FRACTION = 0.45f
+/** Fraction of screen-height used as the top spacer above the
+ *  wordmark. 0.32 puts the brand mark close to the geometric
+ *  middle on a typical Pixel — accounting for the scaffold's
+ *  44 dp header + status-bar inset already above. Tunable;
+ *  lower → wordmark drifts up, higher → drifts down. */
+private const val WORDMARK_VIEWPORT_FRACTION = 0.32f
