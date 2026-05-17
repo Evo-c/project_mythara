@@ -52,6 +52,9 @@ class ChatViewModel @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext private val appCtx: android.content.Context,
     private val deviceIdStore: com.mythara.memory.DeviceIdStore,
     private val lifelineRepo: com.mythara.lifeline.LifelineRepository,
+    private val lifelineCaptioner: com.mythara.lifeline.LifelineCaptioner,
+    private val graphTurnExtractor: com.mythara.memory.graph.GraphTurnExtractor,
+    private val graphChangeNotifier: com.mythara.analytics.GraphChangeNotifier,
     private val taskRepo: com.mythara.tasks.TaskRepository,
     private val auditRepo: com.mythara.audit.AuditRepository,
     private val musicModeStore: com.mythara.data.MusicModeStore,
@@ -376,6 +379,19 @@ class ChatViewModel @Inject constructor(
             val height: Int,
             val deviceShortId: String,
             val placeLabel: String? = null,
+            /** Row id in lifeline_entries — needed by the LifelineCard
+             *  long-press "add context" sheet so it can hand the id
+             *  back to ChatViewModel.saveLifelineNote(). */
+            val lifelineId: Long = 0L,
+            /** Persisted user-supplied note (from the add-context
+             *  sheet). Shown as an italic "you added: …" subtitle
+             *  beneath the AI caption. */
+            val userContext: String? = null,
+            /** JSON array (raw) of `nameKey`s the on-device face
+             *  matcher recognised in this frame. Surfaced as a
+             *  comma-joined chip strip on the card so the user can see
+             *  which contacts were auto-tagged. */
+            val detectedContactsJson: String? = null,
         ) : ChatItem {
             override val tsMillis: Long get() = takenMs
         }
@@ -704,6 +720,129 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Persist a user-authored note onto a SINGLE lifeline photo. Thin
+     * convenience wrapper around [saveLifelineNoteToGroup] for the
+     * common "long-press, type, save" path. Fired from the
+     * LifelineCard long-press → "add context" sheet when no extra
+     * neighbour photos are checked.
+     */
+    fun saveLifelineNote(lifelineId: Long, note: String) {
+        if (lifelineId <= 0L) return
+        saveLifelineNoteToGroup(listOf(lifelineId), note)
+    }
+
+    /**
+     * Persist a user-authored note onto a GROUP of lifeline photos in a
+     * single coroutine, then run extraction + graph rebuild ONCE for
+     * the combined note text. Lets the user fan a single piece of
+     * context out across multiple frames they captured during the same
+     * moment ("birthday dinner with Sam — these five photos").
+     *
+     * Pipeline (per id):
+     *  1. Write `user_context` via [com.mythara.lifeline.LifelineDao.updateUserContext].
+     *  2. Re-load the row + ask [LifelineCaptioner.captionOne] for a
+     *     fresh caption with the note folded into the prompt.
+     *  3. Re-enqueue [com.mythara.face.FaceAnalysisWorker] so any
+     *     contacts MENTIONED in the note can be reconciled against
+     *     faces detected in this specific frame.
+     *
+     * After all ids are done (once, not per-id):
+     *  4. Run [com.mythara.memory.graph.GraphTurnExtractor.extract] on
+     *     the note so any people/places/concepts named in it land in
+     *     the relationship graph.
+     *  5. Pulse [graphChangeNotifier] so the open Insights graph
+     *     re-renders without waiting for navigation.
+     *  6. Re-render the chat so every affected card refreshes inline.
+     */
+    fun saveLifelineNoteToGroup(lifelineIds: List<Long>, note: String) {
+        val ids = lifelineIds.filter { it > 0L }.distinct()
+        if (ids.isEmpty()) return
+        val trimmed = note.trim().take(280)
+        viewModelScope.launch {
+            runCatching {
+                for (lid in ids) {
+                    lifelineRepo.dao.updateUserContext(lid, trimmed)
+                    val row = lifelineRepo.dao.byId(lid)
+                    if (row != null && trimmed.isNotEmpty()) {
+                        lifelineCaptioner.captionOne(row, additionalContext = trimmed)
+                    }
+                    runCatching {
+                        com.mythara.face.FaceAnalysisWorker.enqueue(
+                            appCtx, lid, recognise = false,
+                        )
+                    }
+                }
+                if (trimmed.isNotEmpty()) {
+                    runCatching {
+                        graphTurnExtractor.extract(
+                            userText = trimmed,
+                            agentReply = "",
+                        )
+                    }
+                    graphChangeNotifier.notifyChanged()
+                }
+                rebuildItems(
+                    rows = history.dao.listAll(),
+                    lifeline = lifelineRepo.dao.listRecent(limit = 500),
+                    tasks = runCatching { taskRepo.dao.listRecent(limit = 200) }.getOrDefault(emptyList()),
+                )
+            }
+        }
+    }
+
+    /**
+     * Lifeline neighbours for the "apply this note to other nearby
+     * photos too" UI in the AddNoteSheet. Returns photos taken within
+     * ±[NEIGHBOUR_WINDOW_MS] of [focusedTakenMs], capped to
+     * [MAX_NEIGHBOURS], EXCLUDING the focused photo itself. Local-only
+     * (you can't annotate a photo whose pixels aren't on this device).
+     */
+    suspend fun loadLifelineNeighbours(
+        focusedId: Long,
+        focusedTakenMs: Long,
+    ): List<LifelineNeighbour> {
+        if (focusedId <= 0L || focusedTakenMs <= 0L) return emptyList()
+        val localDev = cachedLocalDeviceId ?: return emptyList()
+        return runCatching {
+            lifelineRepo.dao
+                .listBetween(
+                    fromMs = focusedTakenMs - NEIGHBOUR_WINDOW_MS,
+                    toMs = focusedTakenMs + NEIGHBOUR_WINDOW_MS,
+                )
+                .asSequence()
+                .filter { it.id != focusedId }
+                .filter { !it.isRemote && it.deviceId == localDev }
+                .filter { it.uri.isNotBlank() }
+                .sortedBy { kotlin.math.abs(it.takenMs - focusedTakenMs) }
+                .take(MAX_NEIGHBOURS)
+                .map { LifelineNeighbour(id = it.id, uri = it.uri, takenMs = it.takenMs) }
+                .toList()
+        }.getOrDefault(emptyList())
+    }
+
+    /** Lightweight payload for the AddNoteSheet's "apply to neighbours"
+     *  strip. Just id + uri + ts so the sheet can render a thumbnail
+     *  + checkbox without dragging the full LifelineEntity through the
+     *  composition. */
+    data class LifelineNeighbour(
+        val id: Long,
+        val uri: String,
+        val takenMs: Long,
+    )
+
+    companion object {
+        /** ±window around the focused photo's takenMs used to pull
+         *  "the same moment" neighbour candidates for the AddNoteSheet
+         *  group-apply strip. Two hours catches a dinner / hike /
+         *  meeting without dragging in unrelated shots from earlier
+         *  in the day. */
+        private const val NEIGHBOUR_WINDOW_MS = 2L * 60L * 60L * 1000L
+        /** Cap on neighbour candidates surfaced in the sheet — the
+         *  strip should stay scrollable but readable, not a wall. */
+        private const val MAX_NEIGHBOURS = 8
+    }
+
     private fun rebuildItems(
         rows: List<MessageRow>,
         lifeline: List<com.mythara.lifeline.LifelineEntity> = emptyList(),
@@ -875,6 +1014,9 @@ class ChatViewModel @Inject constructor(
                     height = photo.height,
                     deviceShortId = photo.deviceId.takeLast(8),
                     placeLabel = photo.placeLabel,
+                    lifelineId = photo.id,
+                    userContext = photo.userContext,
+                    detectedContactsJson = photo.detectedContactsJson,
                 ),
             )
         }

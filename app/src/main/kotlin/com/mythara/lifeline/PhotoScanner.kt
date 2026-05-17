@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.mythara.face.FaceAnalysisWorker
 import com.mythara.memory.DeviceIdStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -105,7 +106,18 @@ class PhotoScanner @Inject constructor(
                 captionText = if (isBackfill) "(captioning skipped — pre-install photo)" else null,
             )
             val id = runCatching { repo.dao.insertIfAbsent(entity) }.getOrDefault(-1L)
-            if (id > 0L) inserted++
+            if (id > 0L) {
+                inserted++
+                // Only kick off face analysis for FRESH photos — backfill
+                // rows would otherwise stampede the worker with hundreds
+                // of jobs on first launch. The captioner uses the same
+                // SKIPPED/PENDING gate; we mirror it for face analysis.
+                if (!isBackfill) {
+                    runCatching {
+                        FaceAnalysisWorker.enqueue(ctx, id, recognise = false)
+                    }
+                }
+            }
         }
         Log.d(
             TAG,

@@ -51,6 +51,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mythara.analytics.ContactGraphBuilder
+import com.mythara.analytics.GraphChangeNotifier
 import com.mythara.ui.theme.Glyph
 import com.mythara.ui.theme.MytharaColors
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -84,6 +85,7 @@ import kotlin.random.Random
 @HiltViewModel
 class InsightsViewModel @Inject constructor(
     private val builder: ContactGraphBuilder,
+    private val graphChangeNotifier: GraphChangeNotifier,
 ) : ViewModel() {
 
     data class Ui(
@@ -100,6 +102,15 @@ class InsightsViewModel @Inject constructor(
 
     init {
         refresh()
+        // Listen for "the graph just changed" pulses from other VMs
+        // (e.g. a user note was typed on a lifeline photo and the
+        // GraphTurnExtractor wrote new contact rows / edges). Each
+        // pulse re-kicks refresh() so the on-screen graph stays in
+        // sync with the source-of-truth without the user having to
+        // navigate away + back.
+        viewModelScope.launch {
+            graphChangeNotifier.changes.collect { refresh() }
+        }
     }
 
     fun refresh() {

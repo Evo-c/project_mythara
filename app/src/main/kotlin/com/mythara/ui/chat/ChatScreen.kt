@@ -350,6 +350,8 @@ fun ChatScreen(
                     musicMode = ui.musicMode,
                     onReplayMusic = { text -> vm.replayMusic(text) },
                     onReinforce = { text, gotIt -> vm.musicReinforceReply(text, gotIt) },
+                    onSaveLifelineNote = { ids, note -> vm.saveLifelineNoteToGroup(ids, note) },
+                    onLoadLifelineNeighbours = { id, ts -> vm.loadLifelineNeighbours(id, ts) },
                 )
             }
 
@@ -606,6 +608,9 @@ private fun Transcript(
     musicMode: Boolean = false,
     onReplayMusic: (String) -> Unit = {},
     onReinforce: (String, Boolean) -> Unit = { _, _ -> },
+    onSaveLifelineNote: (List<Long>, String) -> Unit = { _, _ -> },
+    onLoadLifelineNeighbours: suspend (Long, Long) -> List<ChatViewModel.LifelineNeighbour> =
+        { _, _ -> emptyList() },
 ) {
     val listState = rememberLazyListState()
     val streamingActive = !streaming.isNullOrEmpty()
@@ -673,7 +678,7 @@ private fun Transcript(
             }
             if (expandedDay == day) {
                 items(dayItems, key = { "${day}::${it.key}" }) { item ->
-                    RenderChatItem(item, musicMode, onReplayMusic, onReinforce)
+                    RenderChatItem(item, musicMode, onReplayMusic, onReinforce, onSaveLifelineNote, onLoadLifelineNeighbours)
                 }
             }
         }
@@ -693,7 +698,7 @@ private fun Transcript(
 
         // 3) Today's items — rendered inline, always expanded.
         items(currentDayItems, key = { it.key }) { item ->
-            RenderChatItem(item, musicMode, onReplayMusic, onReinforce)
+            RenderChatItem(item, musicMode, onReplayMusic, onReinforce, onSaveLifelineNote, onLoadLifelineNeighbours)
         }
         if (streamingActive) {
             item("streaming") {
@@ -720,6 +725,9 @@ private fun RenderChatItem(
     musicMode: Boolean,
     onReplayMusic: (String) -> Unit,
     onReinforce: (String, Boolean) -> Unit,
+    onSaveLifelineNote: (List<Long>, String) -> Unit = { _, _ -> },
+    onLoadLifelineNeighbours: suspend (Long, Long) -> List<ChatViewModel.LifelineNeighbour> =
+        { _, _ -> emptyList() },
 ) {
     when (item) {
         is ChatViewModel.ChatItem.UserText -> TextBubble(
@@ -741,7 +749,11 @@ private fun RenderChatItem(
         is ChatViewModel.ChatItem.Thought -> ThoughtBubble(item)
         is ChatViewModel.ChatItem.Tool -> ToolCallBubble(item)
         is ChatViewModel.ChatItem.FromOtherDevice -> FromOtherDeviceCard(item)
-        is ChatViewModel.ChatItem.LifelinePhoto -> LifelineCard(item)
+        is ChatViewModel.ChatItem.LifelinePhoto -> LifelineCard(
+            item = item,
+            onSaveNote = onSaveLifelineNote,
+            onLoadNeighbours = onLoadLifelineNeighbours,
+        )
         is ChatViewModel.ChatItem.ReminderCard -> ReminderCard(item)
         is ChatViewModel.ChatItem.PersonInteraction -> PersonInteractionCard(item)
     }
