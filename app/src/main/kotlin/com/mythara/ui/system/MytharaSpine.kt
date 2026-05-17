@@ -96,18 +96,18 @@ fun MytharaSpine(
     var expanded by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
-        // ── Breathing spine on the right edge ─────────────────────
-        // Uses our shared EdgeGlow primitive for the breathing
-        // alpha, plus a slightly opaque rectangle behind so the
-        // bar is visible even at minAlpha against the wallpaper.
+        // ── Breathing spine VISUAL — the 3 dp glow ────────────────
+        // Painted across the FULL screen height so the bar looks
+        // edge-to-edge against the wallpaper. No gesture handler
+        // on the visual itself: input lives on a separate wider
+        // invisible hit zone below so we can dodge the system
+        // status-bar / nav-bar insets without making the visual
+        // look chopped at the top + bottom.
         Box(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .fillMaxHeight()
-                .width(SPINE_WIDTH_DP.dp)
-                .pointerInput(Unit) {
-                    detectTapGestures(onTap = { expanded = !expanded })
-                },
+                .width(SPINE_WIDTH_DP.dp),
         ) {
             EdgeGlow(
                 spec = EdgeGlowSpec(
@@ -121,6 +121,29 @@ fun MytharaSpine(
                 ),
             )
         }
+
+        // ── Breathing spine HIT ZONE — invisible, wider, inset ────
+        // 24 dp wide so a finger can land easily; inset-padded
+        // through systemBars so:
+        //   • the top portion is BELOW the system status bar /
+        //     Dynamic Island — without this, the OS consumes any
+        //     tap near the top edge to pull down the notification
+        //     shade and the spine never sees those events.
+        //   • the bottom portion is ABOVE the gesture-nav home
+        //     indicator — without this, swipes near the bottom
+        //     get stolen by gesture-nav-home.
+        // Mounted BEFORE the rose pip in z-order so the pip's
+        // clickable still wins for taps that land on the pip.
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .windowInsetsPadding(WindowInsets.systemBars)
+                .fillMaxHeight()
+                .width(SPINE_HIT_WIDTH_DP.dp)
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = { expanded = !expanded })
+                },
+        )
 
         // Tiny rose pip at the top of the spine — quick-tap to Chat.
         // Sits inside the systemBars top inset so it never collides
@@ -264,6 +287,12 @@ private fun LauncherEntry(label: String, glyph: String, onTap: () -> Unit) {
 }
 
 private const val SPINE_WIDTH_DP = 3
+/** Invisible tap-target width for the spine. ~24 dp is the
+ *  Material minimum-target heuristic — wider than the 3 dp
+ *  visual so a finger can actually land on it. Extends INTO
+ *  the screen from the right edge; the user just sees the
+ *  3 dp glow, but taps anywhere in this band register. */
+private const val SPINE_HIT_WIDTH_DP = 24
 private const val SPINE_PIP_DP = 24
 private const val PANEL_OPEN_MS = 220
 private const val PANEL_CLOSE_MS = 160
