@@ -277,6 +277,12 @@ dependencies {
     implementation(libs.tflite.gpu)
     implementation(libs.tflite.gpu.api)
 
+    // ONNX Runtime for Supertonic-2 on-device TTS fallback when
+    // ElevenLabs isn't configured. Model files (~270 MB) lazy-
+    // download via SupertonicModelStore on first use so the APK
+    // stays light.
+    implementation(libs.onnxruntime)
+
     // M5+ deps deferred until their milestones land:
     //   SQLCipher (Observe vault), Argon2 (Secret pw)
 }

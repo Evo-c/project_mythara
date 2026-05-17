@@ -181,6 +181,55 @@ class GemmaExtractor @Inject constructor(
         }
     }
 
+    /**
+     * Multimodal inference — describe / answer about an image, using
+     * the same Gemma 4 E2B engine the text-only extraction paths use.
+     * Gemma 4 is multimodal-trained (text + image + audio); LiteRT-LM
+     * surfaces image input via [Content.ImageBytes], which we pass
+     * alongside the text prompt in the same [Message].
+     *
+     * Replaces the API-based cloud vision call for the
+     * [com.mythara.lifeline.LifelineCaptioner] + agent-tool photo
+     * paths when Gemma is available — no network round-trip, image
+     * bytes never leave the device.
+     *
+     * Returns the raw text response or null on any failure (model
+     * not loaded, JPEG bytes empty, inference crash). Caller treats
+     * null as "fall through to cloud vision".
+     */
+    suspend fun describeImage(
+        imageBytes: ByteArray,
+        prompt: String,
+        maxLen: Int = MAX_DESCRIBE_LEN,
+    ): String? {
+        if (imageBytes.isEmpty() || prompt.isBlank()) return null
+        if (!store.isAvailable()) return null
+        return withContext(Dispatchers.Default) {
+            runCatching {
+                inferenceLock.withLock {
+                    val eng = ensureEngine() ?: return@withLock null
+                    val reply: Message = eng.createConversation().use { conv ->
+                        // Variadic Content constructor lets us mix
+                        // image + text in one message. Gemma 4 reads
+                        // them in order; image first is the
+                        // convention that produces the cleanest
+                        // grounded captions.
+                        conv.sendMessage(
+                            Message.of(
+                                Content.ImageBytes(imageBytes),
+                                Content.Text(prompt),
+                            ),
+                        )
+                    }
+                    reply.text().trim().take(maxLen).ifBlank { null }
+                }
+            }.getOrElse { e ->
+                Log.w(TAG, "describeImage failed: ${e.message}")
+                null
+            }
+        }
+    }
+
     fun release() {
         runCatching { engine?.close() }
         engine = null
@@ -357,6 +406,10 @@ class GemmaExtractor @Inject constructor(
         private const val MAX_CONTENT_LEN = 200
         private const val MAX_SUMMARISE_INPUT = 4_000
         private const val MAX_SUMMARY_LEN = 400
+        /** Cap on multimodal describeImage() output. Matches the
+         *  cloud-vision LifelineCaptioner.MAX_CAPTION_CHARS budget
+         *  so on-device + cloud captions feel the same length. */
+        private const val MAX_DESCRIBE_LEN = 400
 
         private const val SUMMARISE_PROMPT = """You summarise conversational text into one short paragraph.
 

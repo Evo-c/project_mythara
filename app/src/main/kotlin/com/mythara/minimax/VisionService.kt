@@ -42,6 +42,7 @@ import javax.inject.Singleton
 class VisionService @Inject constructor(
     private val settings: SettingsStore,
     private val gemini: GeminiVisionService,
+    private val gemmaVision: GemmaVisionService,
 ) {
     /**
      * Successful path: free-text description from whichever vision
@@ -52,7 +53,7 @@ class VisionService @Inject constructor(
         val ok: Boolean,
         val text: String,
         val code: String? = null,
-        /** "gemini" | "minimax-vl" | null on early failure */
+        /** "gemma-on-device" | "gemini" | "minimax-vl" | null on early failure */
         val backend: String? = null,
     )
 
@@ -75,6 +76,31 @@ class VisionService @Inject constructor(
             return@withContext Outcome(false, "Image file is missing or empty.", code = "no_image")
         }
         val snap = settings.snapshot()
+
+        // ── On-device path FIRST ────────────────────────────────────
+        // Gemma 4 E2B via LiteRT-LM — no API key, no network, image
+        // bytes never leave the device. Reuses the same engine
+        // GemmaExtractor uses for persona/relationship analysis, so
+        // there's no extra model footprint. Falls through to cloud
+        // Gemini → MiniMax-VL when the model isn't loaded, the
+        // image won't decode, the inference crashes, or Gemma
+        // returns an empty caption.
+        if (gemmaVision.isAvailable()) {
+            val r = runCatching { gemmaVision.describeImage(imageFile, prompt) }
+                .getOrElse { e ->
+                    GemmaVisionService.Outcome(false, e.message ?: "threw", code = "threw")
+                }
+            if (r.ok && r.text.isNotBlank()) {
+                return@withContext Outcome(
+                    ok = true,
+                    text = r.text,
+                    code = null,
+                    backend = "gemma-on-device",
+                )
+            }
+            Log.i(TAG, "Gemma on-device vision fell through (${r.code ?: "?"}); trying cloud paths")
+        }
+
         // Prefer Gemini when the user has configured a Gemini key. It's
         // the dedicated vision route — free-tier friendly, fast, no
         // dependency on the MiniMax account having VL-01 access.

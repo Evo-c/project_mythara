@@ -196,6 +196,13 @@ tflite-task-vision = { group = "org.tensorflow", name = "tensorflow-lite-task-vi
 tflite-gpu = { group = "org.tensorflow", name = "tensorflow-lite-gpu", version.ref = "tflite" }
 tflite-gpu-api = { group = "org.tensorflow", name = "tensorflow-lite-gpu-api", version.ref = "tflite" }
 
+# Microsoft ONNX Runtime for Android — the inference engine
+# Supertonic-2's 4 ONNX models (text_encoder, duration_predictor,
+# vector_estimator, vocoder) run on. ~6 MB AAR; supports CPU + NNAPI
+# delegates. We lazy-download the model files on first use so the
+# APK stays light.
+onnxruntime = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version = "1.19.2" }
+
 
 # Biometric / device-credential unlock at app entry
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
