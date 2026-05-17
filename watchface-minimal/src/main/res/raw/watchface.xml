@@ -45,8 +45,11 @@
             <Variant mode="AMBIENT" target="alpha" value="0" />
 
             <!-- Brand mark: 180×180 rose centred horizontally in the
-                 upper third of the face. -->
+                 upper third of the face. Tapping it launches the
+                 Mythara wear app (PTT-first home) — same gesture
+                 the Tactical face uses on its PTT button. -->
             <PartImage x="135" y="40" width="180" height="180">
+                <Launch target="com.mythara.debug/com.mythara.wear.MainActivity" />
                 <Image resource="rose" />
             </PartImage>
 
