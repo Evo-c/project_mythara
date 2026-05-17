@@ -79,6 +79,15 @@ class MemorySync @Inject constructor(
      *  user explicitly requested cross-device sync so they don't
      *  lose what they've taught Mythara. */
     private val contactFaceIndex: com.mythara.face.ContactFaceIndex,
+    /** Phase F.2 — unknown-face clusters captured by
+     *  FaceAnalysisWorker. The full state machine (active /
+     *  dismissed / promoted) syncs so the same false-positive
+     *  cluster doesn't resurface on a peer after a restore. */
+    private val unknownFaces: com.mythara.face.UnknownFaceRepository,
+    /** Phase F.2 — physical-meet + message-sent/received + call
+     *  records. Every meaningful interaction with a contact
+     *  becomes a synced learning. */
+    private val contactInteractions: com.mythara.analytics.interactions.ContactInteractionRepository,
     @dagger.hilt.android.qualifiers.ApplicationContext private val ctx: android.content.Context,
 ) {
     data class Report(
@@ -518,6 +527,67 @@ class MemorySync @Inject constructor(
                     "mythara: contact avatars (${avatarRows.size})", written, skipped,
                 )
             }
+
+            // analytics/unknown_faces.jsonl — Phase F.2. Same
+            // encoding strategy as contact_face_samples but for
+            // un-promoted face clusters (the People → Untagged
+            // strip). Carries the full state (dismissed / promoted
+            // / active) so a peer device's matcher doesn't
+            // resurface the same false-positive cluster after a
+            // restore. Capped at 1 000 rows per sync to keep the
+            // JSONL bounded.
+            val unknownFaceRows = runCatching { unknownFaces.dao.listAll() }
+                .getOrDefault(emptyList())
+            if (unknownFaceRows.isNotEmpty()) {
+                val body = unknownFaceRows.joinToString("\n") { row ->
+                    json.encodeToString(
+                        UnknownFaceExport.serializer(),
+                        row.toUnknownFaceExport(deviceId),
+                    )
+                }
+                putWithCache(
+                    client, cfg, "analytics/unknown_faces.jsonl", body, manifest,
+                    "mythara: unknown faces (${unknownFaceRows.size})", written, skipped,
+                )
+            }
+
+            // analytics/contact_interactions.jsonl — Phase F.2.
+            // Every physical_meet / message_sent / message_received
+            // / call_outgoing / call_incoming record from the
+            // ContactInteractionRow table. Capped at the most-recent
+            // 5 000 (per dao default) — older history can be pulled
+            // from per-device archives if ever needed.
+            val interactionRows = runCatching {
+                contactInteractions.dao.listAll(limit = 5_000)
+            }.getOrDefault(emptyList())
+            if (interactionRows.isNotEmpty()) {
+                val body = interactionRows.joinToString("\n") { row ->
+                    json.encodeToString(
+                        ContactInteractionExport.serializer(),
+                        row.toInteractionExport(deviceId),
+                    )
+                }
+                putWithCache(
+                    client, cfg, "analytics/contact_interactions.jsonl", body, manifest,
+                    "mythara: contact interactions (${interactionRows.size})", written, skipped,
+                )
+            }
+
+            // analytics/tasks.jsonl — Phase F.2. Cross-device task
+            // list. The TaskEntity.toExport extension already
+            // exists from an earlier pass for the right-pane
+            // TasksScreenPane sync; we just wire the writer here.
+            val taskRows = runCatching { taskRepo.dao.listRecent(limit = 1_000) }
+                .getOrDefault(emptyList())
+            if (taskRows.isNotEmpty()) {
+                val body = taskRows.joinToString("\n") { row ->
+                    json.encodeToString(TaskExport.serializer(), row.toExport())
+                }
+                putWithCache(
+                    client, cfg, "analytics/tasks.jsonl", body, manifest,
+                    "mythara: tasks (${taskRows.size})", written, skipped,
+                )
+            }
         }
 
         // ---- lifeline/<YYYY-MM>.jsonl — life-timeline photo metadata
@@ -870,6 +940,85 @@ class MemorySync @Inject constructor(
                 }
             }
         }.onFailure { Log.w(tag, "contact-avatars pull failed: ${it.message}") }
+
+        // ---- analytics/unknown_faces.jsonl (Phase F.2)
+        // Restore unknown-face clusters + their crop PNGs.
+        // sourcePhotoPath is reconstructed deterministically from
+        // ctx.filesDir + the encoded basename, so repeated
+        // restores are idempotent. Promoted + dismissed flags
+        // sync so the cluster's state machine survives the
+        // roundtrip.
+        runCatching {
+            val incoming = readJsonlLines(
+                client, cfg, "analytics/unknown_faces.jsonl",
+                UnknownFaceExport.serializer(),
+            )
+            val dir = java.io.File(ctx.filesDir, "unknown_faces").apply { mkdirs() }
+            for (row in incoming) {
+                runCatching {
+                    val cropPath = java.io.File(dir, row.cropFileName).absolutePath
+                    row.cropPngB64?.let { b64 ->
+                        val bytes = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP)
+                        val f = java.io.File(cropPath)
+                        if (!f.isFile || f.length() != bytes.size.toLong()) {
+                            f.writeBytes(bytes)
+                        }
+                    }
+                    val emb = android.util.Base64.decode(row.embeddingB64, android.util.Base64.NO_WRAP)
+                    unknownFaces.dao.upsert(
+                        com.mythara.face.UnknownFaceRow(
+                            id = row.id,
+                            embedding = emb,
+                            cropPath = cropPath,
+                            firstLifelineId = row.firstLifelineId,
+                            firstSeenMs = row.firstSeenMs,
+                            lastSeenMs = row.lastSeenMs,
+                            seenCount = row.seenCount,
+                            traceIds = row.traceIds,
+                            dismissed = row.dismissed,
+                            promoted = row.promoted,
+                            modelVersion = row.modelVersion,
+                        ),
+                    )
+                }
+            }
+        }.onFailure { Log.w(tag, "unknown-faces pull failed: ${it.message}") }
+
+        // ---- analytics/contact_interactions.jsonl (Phase F.2)
+        // Bulk insert with IGNORE-on-conflict semantics — the
+        // unique row index (auto-id) means the same row from a
+        // peer simply doesn't double-insert on the restoring
+        // device. Cross-device dedup is best-effort; a peer that
+        // pushes 5k rows after a local insert wins is the
+        // accepted compromise (history surface is read-mostly).
+        runCatching {
+            val incoming = readJsonlLines(
+                client, cfg, "analytics/contact_interactions.jsonl",
+                ContactInteractionExport.serializer(),
+            )
+            for (row in incoming) {
+                runCatching {
+                    contactInteractions.dao.insert(row.toRow())
+                }
+            }
+        }.onFailure { Log.w(tag, "interactions pull failed: ${it.message}") }
+
+        // ---- analytics/tasks.jsonl (Phase F.2)
+        // Tasks already have a sync-friendly id (ULID-style); the
+        // existing toExport / toRow extensions handle the
+        // roundtrip. REPLACE-on-conflict so a peer's edits to the
+        // same task win when newer.
+        runCatching {
+            val incoming = readJsonlLines(
+                client, cfg, "analytics/tasks.jsonl",
+                TaskExport.serializer(),
+            )
+            for (row in incoming) {
+                runCatching {
+                    taskRepo.dao.upsert(row.toRow())
+                }
+            }
+        }.onFailure { Log.w(tag, "tasks pull failed: ${it.message}") }
 
         // ---- analytics/music_vocab.json (first-mint-wins merge)
         runCatching {
@@ -1956,6 +2105,46 @@ class MemorySync @Inject constructor(
         val dev: String? = null,
     )
 
+    /** Phase F.2 — wire shape for an UnknownFaceRow (face cluster
+     *  from auto-detected unmatched faces). Carries the full state
+     *  machine + the crop PNG inline so a peer device's matcher
+     *  doesn't re-cluster the same false positives after restore. */
+    @Serializable
+    data class UnknownFaceExport(
+        val id: Long,
+        val embeddingB64: String,
+        val cropFileName: String,           // basename of crop PNG, reconstructed under filesDir/unknown_faces/
+        val firstLifelineId: Long,
+        val firstSeenMs: Long,
+        val lastSeenMs: Long,
+        val seenCount: Int,
+        val traceIds: String,
+        val dismissed: Boolean,
+        val promoted: Boolean,
+        val modelVersion: Int,
+        val cropPngB64: String? = null,
+        val dev: String? = null,
+    )
+
+    /** Phase F.2 — wire shape for a ContactInteractionRow
+     *  (physical_meet / message_sent / message_received /
+     *  call_outgoing / call_incoming / mention). One row per
+     *  meaningful interaction. */
+    @Serializable
+    data class ContactInteractionExport(
+        val nameKey: String,
+        val tsMs: Long,
+        val kind: String,
+        val source: String,
+        val lat: Double? = null,
+        val lng: Double? = null,
+        val placeLabel: String? = null,
+        val note: String? = null,
+        val refLifelineId: Long? = null,
+        val refAuditId: Long? = null,
+        val dev: String? = null,
+    )
+
     @Serializable
     data class ChatRowExport(
         val t: Long,
@@ -2200,6 +2389,74 @@ private fun com.mythara.analytics.ContactProfileRow.toAvatarExport(
  *  worst-case 200-sample sync well under GitHub's 100 MB file
  *  limit. Typical face crops are 10–50 KB; 500 KB is generous. */
 private const val MAX_FACE_CROP_BYTES = 500_000L
+
+/** Phase F.2 — unknown-face wire encoder. Same crop-size guard as
+ *  the contact-sample path. Stores only the BASENAME of the crop
+ *  file so the restoring device can reconstruct the absolute path
+ *  under its own filesDir/unknown_faces/ — paths are portable
+ *  per-package, not per-installation. */
+private fun com.mythara.face.UnknownFaceRow.toUnknownFaceExport(
+    syncDeviceId: String,
+): MemorySync.UnknownFaceExport {
+    val cropB64 = runCatching {
+        val f = java.io.File(cropPath)
+        if (f.isFile && f.length() in 1..MAX_FACE_CROP_BYTES) {
+            android.util.Base64.encodeToString(f.readBytes(), android.util.Base64.NO_WRAP)
+        } else null
+    }.getOrNull()
+    return MemorySync.UnknownFaceExport(
+        id = id,
+        embeddingB64 = android.util.Base64.encodeToString(embedding, android.util.Base64.NO_WRAP),
+        cropFileName = java.io.File(cropPath).name,
+        firstLifelineId = firstLifelineId,
+        firstSeenMs = firstSeenMs,
+        lastSeenMs = lastSeenMs,
+        seenCount = seenCount,
+        traceIds = traceIds,
+        dismissed = dismissed,
+        promoted = promoted,
+        modelVersion = modelVersion,
+        cropPngB64 = cropB64,
+        dev = syncDeviceId,
+    )
+}
+
+/** Phase F.2 — contact-interaction wire encoder. Direct field
+ *  copy; no large binaries involved. */
+private fun com.mythara.analytics.interactions.ContactInteractionRow.toInteractionExport(
+    syncDeviceId: String,
+): MemorySync.ContactInteractionExport =
+    MemorySync.ContactInteractionExport(
+        nameKey = nameKey,
+        tsMs = tsMs,
+        kind = kind,
+        source = source,
+        lat = lat,
+        lng = lng,
+        placeLabel = placeLabel,
+        note = note,
+        refLifelineId = refLifelineId,
+        refAuditId = refAuditId,
+        dev = syncDeviceId,
+    )
+
+/** Phase F.2 — contact-interaction wire decoder. Constructs a row
+ *  with id=0 so Room auto-assigns one on insert (cross-device
+ *  primary keys would collide otherwise). */
+private fun MemorySync.ContactInteractionExport.toRow():
+    com.mythara.analytics.interactions.ContactInteractionRow =
+    com.mythara.analytics.interactions.ContactInteractionRow(
+        nameKey = nameKey,
+        tsMs = tsMs,
+        kind = kind,
+        source = source,
+        lat = lat,
+        lng = lng,
+        placeLabel = placeLabel,
+        note = note,
+        refLifelineId = refLifelineId,
+        refAuditId = refAuditId,
+    )
 
 private fun MemorySync.AuditExport.toRow(): com.mythara.audit.AuditEntry =
     com.mythara.audit.AuditEntry(

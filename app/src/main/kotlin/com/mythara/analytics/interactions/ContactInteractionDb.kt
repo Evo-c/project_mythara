@@ -102,6 +102,11 @@ interface ContactInteractionDao {
     @Query("SELECT COUNT(*) FROM contact_interactions")
     suspend fun count(): Int
 
+    /** Phase F.2 — bulk read for cross-device sync. Bounded so a
+     *  10k-row history doesn't blow up a single JSONL upload. */
+    @Query("SELECT * FROM contact_interactions ORDER BY ts_ms DESC LIMIT :limit")
+    suspend fun listAll(limit: Int = 5_000): List<ContactInteractionRow>
+
     @Query("DELETE FROM contact_interactions WHERE name_key = :nameKey")
     suspend fun deleteForContact(nameKey: String): Int
 

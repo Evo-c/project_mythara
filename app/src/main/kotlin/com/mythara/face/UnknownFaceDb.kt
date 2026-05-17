@@ -130,6 +130,13 @@ interface UnknownFaceDao {
     @Query("SELECT * FROM unknown_faces WHERE promoted = 0")
     suspend fun listForClustering(): List<UnknownFaceRow>
 
+    /** Phase F.2 — bulk read for cross-device sync. Includes
+     *  promoted + dismissed rows so a peer device gets the full
+     *  state machine (so the same false-positive doesn't resurface
+     *  as a new untagged cluster on the new device). */
+    @Query("SELECT * FROM unknown_faces ORDER BY last_seen_ms DESC LIMIT :limit")
+    suspend fun listAll(limit: Int = 1_000): List<UnknownFaceRow>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(row: UnknownFaceRow): Long
 
