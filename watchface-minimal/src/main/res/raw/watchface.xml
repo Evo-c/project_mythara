@@ -80,12 +80,28 @@
                 </TimeText>
             </DigitalClock>
 
-            <!-- Brand wordmark beneath the time. Small, dim. -->
-            <PartText x="0" y="305" width="450" height="22">
+            <!-- Stylised M.Y.T.H.A.R.A wordmark beneath the time —
+                 letters in purple (matches the wear app's letters)
+                 with neon-cyan dots between them (matches the rose
+                 hex nucleus + the time colon above). Multiple <Font>
+                 children inside a single <Text> let each glyph carry
+                 its own colour without needing 13 separately-
+                 positioned PartText elements. -->
+            <PartText x="0" y="305" width="450" height="24">
                 <Text align="CENTER">
-                    <Font family="jetbrains_mono_regular" size="13"
-                        weight="NORMAL" slant="NORMAL"
-                        color="#ff8e8a95"><![CDATA[MYTHARA]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff9b86ff"><![CDATA[M]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff68ffd6"><![CDATA[.]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff9b86ff"><![CDATA[Y]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff68ffd6"><![CDATA[.]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff9b86ff"><![CDATA[T]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff68ffd6"><![CDATA[.]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff9b86ff"><![CDATA[H]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff68ffd6"><![CDATA[.]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff9b86ff"><![CDATA[A]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff68ffd6"><![CDATA[.]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff9b86ff"><![CDATA[R]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff68ffd6"><![CDATA[.]]></Font>
+                    <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff9b86ff"><![CDATA[A]]></Font>
                 </Text>
             </PartText>
 
