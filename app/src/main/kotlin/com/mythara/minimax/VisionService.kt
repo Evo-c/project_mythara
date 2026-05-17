@@ -77,68 +77,110 @@ class VisionService @Inject constructor(
         }
         val snap = settings.snapshot()
 
-        // ── On-device path FIRST ────────────────────────────────────
-        // Gemma 4 E2B via LiteRT-LM — no API key, no network, image
-        // bytes never leave the device. Reuses the same engine
-        // GemmaExtractor uses for persona/relationship analysis, so
-        // there's no extra model footprint. Falls through to cloud
-        // Gemini → MiniMax-VL when the model isn't loaded, the
-        // image won't decode, the inference crashes, or Gemma
-        // returns an empty caption.
-        if (gemmaVision.isAvailable()) {
-            val r = runCatching { gemmaVision.describeImage(imageFile, prompt) }
-                .getOrElse { e ->
-                    GemmaVisionService.Outcome(false, e.message ?: "threw", code = "threw")
-                }
+        // ── Routing ────────────────────────────────────────────────
+        // Default order — on-device Gemma 4 E2B → cloud Gemini →
+        // MiniMax-VL. When the user flips `preferCloudVision` in
+        // Settings, the first two swap (cloud Gemini → Gemma → MiniMax)
+        // — useful when the user has a Gemini key and wants the
+        // higher-accuracy cloud caption per call.
+        //
+        // MiniMax stays last in both orders (it's the final
+        // fallback for when neither preferred path is available
+        // and the user has only a MiniMax key).
+        val gemmaFn: suspend () -> Outcome? = { tryGemmaOnDevice(imageFile, prompt) }
+        val geminiFn: suspend () -> Outcome? = { tryGeminiCloud(snap.geminiKey, imageFile, prompt) }
+        val ordered: List<suspend () -> Outcome?> = if (snap.preferCloudVision) {
+            listOf(geminiFn, gemmaFn)
+        } else {
+            listOf(gemmaFn, geminiFn)
+        }
+        for (fn in ordered) {
+            val r = fn() ?: continue
+            // tryX returns null when the path is unavailable
+            // (model not loaded / no key) so we can cascade. A
+            // non-null Outcome — whether successful or a hard
+            // failure — is what that route actually produced.
+            // We only return on success; a non-ok result from a
+            // cloud path is logged and we still cascade so a
+            // transient cloud outage doesn't dead-end captioning.
             if (r.ok && r.text.isNotBlank()) {
-                return@withContext Outcome(
-                    ok = true,
-                    text = r.text,
-                    code = null,
-                    backend = "gemma-on-device",
-                )
+                return@withContext r
             }
-            Log.i(TAG, "Gemma on-device vision fell through (${r.code ?: "?"}); trying cloud paths")
+            Log.i(TAG, "vision backend ${r.backend ?: "?"} fell through (${r.code ?: "?"})")
         }
+        // MiniMax-VL is the final fallback regardless of routing
+        // preference. Returns null when the user has no MiniMax key
+        // configured; we surface a unified "no key" error in that
+        // case so the caller sees ONE actionable message rather
+        // than a string of fall-throughs.
+        val minimax = tryMiniMaxCloud(snap.apiKey, snap.region, imageFile, prompt)
+        if (minimax != null) return@withContext minimax
 
-        // Prefer Gemini when the user has configured a Gemini key. It's
-        // the dedicated vision route — free-tier friendly, fast, no
-        // dependency on the MiniMax account having VL-01 access.
-        // Falls through to MiniMax-VL-01 only when Gemini isn't set.
-        if (!snap.geminiKey.isNullOrBlank()) {
-            val r = runCatching {
-                gemini.describeImage(imageFile = imageFile, prompt = prompt, apiKey = snap.geminiKey)
-            }.getOrElse { e ->
-                GeminiVisionService.Outcome(false, e.message ?: e.javaClass.simpleName, "threw")
+        Outcome(
+            false,
+            "No vision backend produced a result. " +
+                "Install the Gemma model (Settings → on-device model) " +
+                "or add a Gemini / MiniMax API key.",
+            code = "all_backends_failed",
+        )
+    }
+
+    /** Run the on-device Gemma 4 E2B path. Returns null when the
+     *  model isn't loaded (so the caller cascades) or the populated
+     *  Outcome when it ran. */
+    private suspend fun tryGemmaOnDevice(imageFile: File, prompt: String): Outcome? {
+        if (!gemmaVision.isAvailable()) return null
+        val r = runCatching { gemmaVision.describeImage(imageFile, prompt) }
+            .getOrElse { e ->
+                GemmaVisionService.Outcome(false, e.message ?: "threw", code = "threw")
             }
-            return@withContext Outcome(
-                ok = r.ok,
-                text = r.text,
-                code = r.code,
-                backend = "gemini",
-            )
-        }
-        val apiKey = snap.apiKey
-        if (apiKey.isNullOrBlank()) {
-            return@withContext Outcome(false, "Neither Gemini nor MiniMax API key is configured.", code = "missing_api_key")
-        }
+        return Outcome(
+            ok = r.ok,
+            text = r.text,
+            code = r.code,
+            backend = "gemma-on-device",
+        )
+    }
 
-        // Base64-encode the file. We cap at MAX_BYTES (~4MB pre-encode)
-        // to keep the JSON body reasonable; CameraCapture's downscale
-        // to ≤1024px long-edge usually leaves us well under 200KB.
+    /** Run the cloud Gemini path. Returns null when no Gemini key
+     *  is configured (caller cascades). */
+    private suspend fun tryGeminiCloud(geminiKey: String?, imageFile: File, prompt: String): Outcome? {
+        if (geminiKey.isNullOrBlank()) return null
+        val r = runCatching {
+            gemini.describeImage(imageFile = imageFile, prompt = prompt, apiKey = geminiKey)
+        }.getOrElse { e ->
+            GeminiVisionService.Outcome(false, e.message ?: e.javaClass.simpleName, "threw")
+        }
+        return Outcome(
+            ok = r.ok,
+            text = r.text,
+            code = r.code,
+            backend = "gemini",
+        )
+    }
+
+    /** Run the cloud MiniMax-VL path. Returns null when neither a
+     *  MiniMax API key nor an image-readable file is available. */
+    private suspend fun tryMiniMaxCloud(
+        apiKey: String?,
+        region: Region,
+        imageFile: File,
+        prompt: String,
+    ): Outcome? {
+        if (apiKey.isNullOrBlank()) return null
         val bytes = runCatching { imageFile.readBytes() }.getOrElse {
-            return@withContext Outcome(false, "Couldn't read image bytes: ${it.message}", code = "read_failed")
+            return Outcome(false, "Couldn't read image bytes: ${it.message}", code = "read_failed", backend = "minimax-vl")
         }
         if (bytes.size > MAX_BYTES) {
-            return@withContext Outcome(
+            return Outcome(
                 false,
                 "Image is too large (${bytes.size} bytes) — vision is capped at $MAX_BYTES.",
                 code = "image_too_large",
+                backend = "minimax-vl",
             )
         }
         val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
         val dataUri = "data:image/jpeg;base64,$b64"
-
         val request = VisionChatRequest(
             model = VISION_MODEL,
             stream = false,
@@ -157,25 +199,24 @@ class VisionService @Inject constructor(
             temperature = 0.4,
             maxCompletionTokens = MAX_RESPONSE_TOKENS,
         )
-
-        val client = MiniMaxClient(apiKey = apiKey, region = snap.region)
+        val client = MiniMaxClient(apiKey = apiKey, region = region)
         val result = runCatching { client.retrofit.chatCompletionNonStreaming(request) }
         if (result.isFailure) {
             val e = result.exceptionOrNull()
             Log.w(TAG, "vision call threw", e)
-            return@withContext Outcome(false, e?.message ?: "network failure", code = "network")
+            return Outcome(false, e?.message ?: "network failure", code = "network", backend = "minimax-vl")
         }
         val res = result.getOrThrow()
         if (!res.isSuccessful) {
             val mapped = ErrorMapper.fromHttp(res.code(), res.errorBody()?.string())
             Log.w(TAG, "vision call ${res.code()}: ${mapped.message}")
-            return@withContext Outcome(false, mapped.message, code = mapped.code ?: "http_${res.code()}")
+            return Outcome(false, mapped.message, code = mapped.code ?: "http_${res.code()}", backend = "minimax-vl")
         }
         val text = res.body()?.choices?.firstOrNull()?.message?.content
         if (text.isNullOrBlank()) {
-            return@withContext Outcome(false, "Empty response from vision model.", code = "empty", backend = "minimax-vl")
+            return Outcome(false, "Empty response from vision model.", code = "empty", backend = "minimax-vl")
         }
-        Outcome(ok = true, text = text.trim(), backend = "minimax-vl")
+        return Outcome(ok = true, text = text.trim(), backend = "minimax-vl")
     }
 
     companion object {

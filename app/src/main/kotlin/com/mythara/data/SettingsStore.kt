@@ -62,6 +62,12 @@ class SettingsStore @Inject constructor(
     private val keyElevenLabsKeyEncrypted = stringPreferencesKey("elevenLabsKey.encrypted")
     private val keyElevenLabsVoiceId = stringPreferencesKey("elevenLabsVoiceId")
     private val keyUseElevenLabs = booleanPreferencesKey("useElevenLabs")
+    // Vision routing — when true, VisionService tries the cloud
+    // backends (Gemini → MiniMax-VL) before the on-device Gemma
+    // path. Default is false (Gemma first) for privacy + zero-cost
+    // captioning; users with a Gemini key who prefer higher
+    // accuracy can flip this from Settings.
+    private val keyPreferCloudVision = booleanPreferencesKey("preferCloudVision")
 
     private val aead: Aead by lazy {
         AeadConfig.register()
@@ -182,6 +188,10 @@ class SettingsStore @Inject constructor(
         ctx.dataStore.edit { it[keyUseElevenLabs] = value }
     }
 
+    suspend fun setPreferCloudVision(value: Boolean) {
+        ctx.dataStore.edit { it[keyPreferCloudVision] = value }
+    }
+
     suspend fun setRegion(region: Region) {
         ctx.dataStore.edit { it[keyRegion] = region.name }
     }
@@ -201,6 +211,7 @@ class SettingsStore @Inject constructor(
             elevenLabsKey = prefs[keyElevenLabsKeyEncrypted]?.let { tryDecrypt(it) },
             elevenLabsVoiceId = prefs[keyElevenLabsVoiceId] ?: DEFAULT_ELEVEN_LABS_VOICE_ID,
             useElevenLabs = prefs[keyUseElevenLabs] ?: false,
+            preferCloudVision = prefs[keyPreferCloudVision] ?: false,
         )
     }
 
@@ -221,6 +232,11 @@ class SettingsStore @Inject constructor(
         val elevenLabsVoiceId: String = DEFAULT_ELEVEN_LABS_VOICE_ID,
         /** When true AND key is set, Tts.speak routes through ElevenLabs. */
         val useElevenLabs: Boolean = false,
+        /** Vision routing: false (default) = on-device Gemma 4 E2B
+         *  first → cloud Gemini → MiniMax-VL. True flips the order
+         *  so cloud Gemini runs first (when the key is configured),
+         *  with Gemma + MiniMax as fallbacks. */
+        val preferCloudVision: Boolean = false,
     )
 
     companion object {

@@ -63,6 +63,10 @@ class SettingsViewModel @Inject constructor(
         /** Voices fetched from /v1/voices for the dropdown picker. */
         val elevenLabsVoices: List<com.mythara.mic.ElevenLabsTtsService.Voice> = emptyList(),
         val elevenLabsVoicesLoading: Boolean = false,
+        /** Vision routing preference. false = Gemma on-device first
+         *  (default; privacy + zero-cost). true = cloud Gemini first
+         *  when the key is configured (higher accuracy per call). */
+        val preferCloudVision: Boolean = false,
     )
 
     data class ValidationResult(val ok: Boolean, val message: String)
@@ -82,6 +86,7 @@ class SettingsViewModel @Inject constructor(
                     elevenLabsKey = snap.elevenLabsKey,
                     elevenLabsVoiceId = snap.elevenLabsVoiceId,
                     useElevenLabs = snap.useElevenLabs,
+                    preferCloudVision = snap.preferCloudVision,
                 )
             }
             // Pre-fetch the voice library on cold start so the
@@ -219,5 +224,10 @@ class SettingsViewModel @Inject constructor(
     suspend fun setUseElevenLabs(value: Boolean) {
         store.setUseElevenLabs(value)
         _state.update { it.copy(useElevenLabs = value) }
+    }
+
+    suspend fun setPreferCloudVision(value: Boolean) {
+        store.setPreferCloudVision(value)
+        _state.update { it.copy(preferCloudVision = value) }
     }
 }

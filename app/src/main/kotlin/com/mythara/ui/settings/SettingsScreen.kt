@@ -2,6 +2,7 @@ package com.mythara.ui.settings
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -240,6 +241,35 @@ fun SettingsScreen(
                 text = "${Glyph.AccentBar} when set, take_photo sends captured images to gemini-2.5-flash (dedicated vision) instead of MiniMax-VL-01. Get a free-tier key at aistudio.google.com/app/apikey. Encrypted at rest with the same Keystore-backed AEAD as your MiniMax key.",
                 style = MaterialTheme.typography.bodySmall.copy(color = MytharaColors.FgDim),
                 modifier = Modifier.padding(top = 6.dp),
+            )
+
+            // Routing preference toggle — lets a user with a Gemini
+            // key flip the cascade so the cloud Gemini call runs
+            // FIRST and the on-device Gemma is the fallback. Default
+            // (off) prioritises on-device for privacy + zero cost.
+            Spacer(Modifier.padding(top = 12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = state.preferCloudVision.let { on ->
+                        if (on) Glyph.CircleFilled else Glyph.CircleOutline
+                    },
+                    color = if (state.preferCloudVision) MytharaColors.Charple else MytharaColors.FgDim,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.clickable {
+                        scope.launch { vm.setPreferCloudVision(!state.preferCloudVision) }
+                    },
+                )
+                Spacer(Modifier.padding(end = 6.dp))
+                Text(
+                    text = "prefer cloud Gemini over on-device Gemma",
+                    color = MytharaColors.Fg,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            Text(
+                text = "${Glyph.AccentBar} off (default) = on-device Gemma 4 E2B runs first; private + free, cloud only as fallback. on = cloud Gemini runs first when a key is configured; higher caption accuracy at the cost of an API call per photo. MiniMax-VL is the final fallback in both modes.",
+                style = MaterialTheme.typography.bodySmall.copy(color = MytharaColors.FgDim),
+                modifier = Modifier.padding(top = 4.dp),
             )
         }
 
