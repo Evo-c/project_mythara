@@ -98,11 +98,11 @@
                     pivotX="0.5" pivotY="1.0" />
             </AnalogClock>
 
-            <!-- Brand mark: 180×180 rose centred horizontally in the
-                 upper third of the face. Tapping it launches the
-                 Mythara wear app (PTT-first home) — same gesture
-                 the Tactical face uses on its PTT button. -->
-            <PartImage x="135" y="40" width="180" height="180">
+            <!-- Brand mark: 130×130 rose centred horizontally in the
+                 upper third of the face. Smaller than before to leave
+                 room for the ECG/HR row below the wordmark. Tapping
+                 it launches the Mythara wear app (PTT-first home). -->
+            <PartImage x="160" y="45" width="130" height="130">
                 <Launch target="com.mythara.debug/com.mythara.wear.MainActivity" />
                 <Image resource="rose" />
             </PartImage>
@@ -122,7 +122,7 @@
                  single-line), month uses [MONTH_S], day-of-month
                  uses [DAY] — all are standard WFF template
                  parameters listed in the format reference. -->
-            <PartText x="115" y="222" width="100" height="22">
+            <PartText x="115" y="190" width="100" height="22">
                 <Text align="END">
                     <Font family="jetbrains_mono_regular" size="15"
                         weight="BOLD" slant="NORMAL" color="#ff9b86ff">
@@ -130,14 +130,14 @@
                     </Font>
                 </Text>
             </PartText>
-            <PartText x="215" y="222" width="20" height="22">
+            <PartText x="215" y="190" width="20" height="22">
                 <Text align="CENTER">
                     <Font family="jetbrains_mono_regular" size="16"
                         weight="BOLD" slant="NORMAL"
                         color="#ff68ffd6"><![CDATA[|]]></Font>
                 </Text>
             </PartText>
-            <PartText x="235" y="222" width="100" height="22">
+            <PartText x="235" y="190" width="100" height="22">
                 <Text align="START">
                     <Font family="jetbrains_mono_regular" size="15"
                         weight="BOLD" slant="NORMAL" color="#ff9b86ff">
@@ -150,21 +150,21 @@
                  its own colour: hours in neon purple, colon in neon
                  cyan, minutes in neon purple. Moved down to y=255 to
                  make room for the day/date row above. -->
-            <DigitalClock x="99" y="255" width="100" height="80">
+            <DigitalClock x="99" y="220" width="100" height="80">
                 <TimeText format="hh" hourFormat="24" align="END"
                     x="0" y="0" width="100" height="80">
                     <Font family="jetbrains_mono_regular" size="56"
                         weight="NORMAL" slant="NORMAL" color="#ff9b86ff" />
                 </TimeText>
             </DigitalClock>
-            <PartText x="199" y="255" width="52" height="80">
+            <PartText x="199" y="220" width="52" height="80">
                 <Text align="CENTER">
                     <Font family="jetbrains_mono_regular" size="56"
                         weight="NORMAL" slant="NORMAL"
                         color="#ff68ffd6"><![CDATA[:]]></Font>
                 </Text>
             </PartText>
-            <DigitalClock x="251" y="255" width="100" height="80">
+            <DigitalClock x="251" y="220" width="100" height="80">
                 <TimeText format="mm" align="START"
                     x="0" y="0" width="100" height="80">
                     <Font family="jetbrains_mono_regular" size="56"
@@ -181,7 +181,7 @@
                  positioned PartText elements. Moved down to y=340
                  to follow the time's relocation (made room for the
                  day/date row above). -->
-            <PartText x="0" y="340" width="450" height="24">
+            <PartText x="0" y="305" width="450" height="24">
                 <Text align="CENTER">
                     <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff9b86ff"><![CDATA[M]]></Font>
                     <Font family="jetbrains_mono_regular" size="14" weight="BOLD" color="#ff68ffd6"><![CDATA[.]]></Font>
@@ -199,23 +199,26 @@
                 </Text>
             </PartText>
 
-            <!-- Complication slot 1 — bottom-left. Default: heart rate.
-                 Moved down to y=378 along with the time + wordmark to
-                 keep visual spacing consistent now that the day/date
-                 row sits above the time. -->
-            <ComplicationSlot slotId="1" x="80" y="378" width="100" height="40"
+            <!-- ECG strip — subtle purple QRS-T waveform with a baked-
+                 in sweep gradient. -->
+            <PartImage x="115" y="340" width="220" height="24">
+                <Image resource="ecg_wave" />
+            </PartImage>
+
+            <!-- HR value beneath the ECG strip — pulled from the
+                 HEART_RATE complication provider. -->
+            <ComplicationSlot slotId="1" x="175" y="370" width="100" height="26"
                 supportedTypes="SHORT_TEXT EMPTY">
-                <BoundingOval x="0" y="0" width="100" height="40" />
+                <BoundingOval x="0" y="0" width="100" height="26" />
                 <DefaultProviderPolicy
                     defaultSystemProvider="HEART_RATE"
                     defaultSystemProviderType="SHORT_TEXT" />
                 <Complication type="SHORT_TEXT">
-                    <PartText x="0" y="0" width="100" height="40">
+                    <PartText x="0" y="0" width="100" height="26">
                         <Text align="CENTER">
-                            <Font family="jetbrains_mono_regular" size="18"
-                                weight="NORMAL" slant="NORMAL"
-                                color="#ffeb4268">
-                                <Template><![CDATA[%s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
+                            <Font family="jetbrains_mono_regular" size="16"
+                                weight="NORMAL" slant="NORMAL" color="#ff9b86ff">
+                                <Template><![CDATA[%s bpm]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
                             </Font>
                         </Text>
                     </PartText>
@@ -223,25 +226,20 @@
                 <Complication type="EMPTY" />
             </ComplicationSlot>
 
-            <!-- Complication slot 2 — bottom-right. Default: watch battery. -->
-            <ComplicationSlot slotId="2" x="270" y="378" width="100" height="40"
+            <!-- Battery complication (slot 2) — kept so WFF doesn't
+                 reject the schema. Rendered tiny in the top-right,
+                 effectively invisible at low alpha. WFF v2 seems to
+                 require sequential slotIds (1 + 2); removing slot 2
+                 caused the whole face to fail style-schema extraction
+                 with FavoriteOperationException Error 0. -->
+            <ComplicationSlot slotId="2" x="0" y="0" width="1" height="1"
                 supportedTypes="SHORT_TEXT EMPTY">
-                <BoundingOval x="0" y="0" width="100" height="40" />
+                <BoundingOval x="0" y="0" width="1" height="1" />
                 <DefaultProviderPolicy
                     defaultSystemProvider="WATCH_BATTERY"
                     defaultSystemProviderType="SHORT_TEXT" />
-                <Complication type="SHORT_TEXT">
-                    <PartText x="0" y="0" width="100" height="40">
-                        <Text align="CENTER">
-                            <Font family="jetbrains_mono_regular" size="18"
-                                weight="NORMAL" slant="NORMAL"
-                                color="#ff68ffd6">
-                                <Template><![CDATA[%s]]><Parameter expression="[COMPLICATION.TEXT]" /></Template>
-                            </Font>
-                        </Text>
-                    </PartText>
-                </Complication>
                 <Complication type="EMPTY" />
+                <Complication type="SHORT_TEXT" />
             </ComplicationSlot>
         </Group>
 
