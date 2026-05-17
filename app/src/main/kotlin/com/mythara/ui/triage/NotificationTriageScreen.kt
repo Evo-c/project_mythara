@@ -121,25 +121,9 @@ fun NotificationTriageScreen(
             .background(MytharaColors.Bg)
             .padding(WindowInsets.systemBars.asPaddingValues()),
     ) {
-        // Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
-        }
-        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-            Text(
-                text = "TRIAGE",
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    color = MytharaColors.Fg, letterSpacing = 3.sp,
-                ),
-            )
-            Spacer(Modifier.height(4.dp))
+        // Phase D — MytharaScaffold provides header (← back / ✓
+        // triage). Body owns the subtitle + list.
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
             Text(
                 text = "${Glyph.AccentBar} notifications Mythara silently dismissed for you " +
                     "based on what you've ignored before. Mark anything important so it stays " +

@@ -292,9 +292,15 @@ fun MytharaRoot(
                                 }
                             }
                             composable(Routes.MusicVocab) {
-                                com.mythara.ui.music.MusicVocabularyScreen(
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "music vocabulary",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondOutline,
                                     onBack = { nav.popBackStack() },
-                                )
+                                ) {
+                                    com.mythara.ui.music.MusicVocabularyScreen(
+                                        onBack = { nav.popBackStack() },
+                                    )
+                                }
                             }
                             composable(Routes.Face) {
                                 com.mythara.ui.scaffold.MytharaScaffold(
@@ -361,10 +367,16 @@ fun MytharaRoot(
                                 }
                             }
                             composable(Routes.SecretSettings) {
-                                SecretSettingsScreen(
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "secret",
+                                    glyph = com.mythara.ui.theme.Glyph.CircleFilled,
                                     onBack = { nav.popBackStack() },
-                                    onOpenNotes = { nav.navigate(Routes.Notes) },
-                                )
+                                ) {
+                                    SecretSettingsScreen(
+                                        onBack = { nav.popBackStack() },
+                                        onOpenNotes = { nav.navigate(Routes.Notes) },
+                                    )
+                                }
                             }
                             composable(Routes.Notes) {
                                 com.mythara.ui.scaffold.MytharaScaffold(
@@ -402,19 +414,47 @@ fun MytharaRoot(
                                 }
                             }
                             composable(Routes.Permissions) {
-                                PermissionsScreen(onBack = { nav.popBackStack() })
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "permissions",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondOutline,
+                                    onBack = { nav.popBackStack() },
+                                ) {
+                                    PermissionsScreen(onBack = { nav.popBackStack() })
+                                }
                             }
                             composable(Routes.Triage) {
-                                NotificationTriageScreen(onBack = { nav.popBackStack() })
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "triage",
+                                    glyph = com.mythara.ui.theme.Glyph.Check,
+                                    onBack = { nav.popBackStack() },
+                                ) {
+                                    NotificationTriageScreen(onBack = { nav.popBackStack() })
+                                }
                             }
                             composable(Routes.Usage) {
-                                UsageScreen(
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "usage",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondOutline,
                                     onBack = { nav.popBackStack() },
-                                    onSignIn = { nav.navigate(Routes.MiniMaxSignIn) },
-                                )
+                                ) {
+                                    UsageScreen(
+                                        onBack = { nav.popBackStack() },
+                                        onSignIn = { nav.navigate(Routes.MiniMaxSignIn) },
+                                    )
+                                }
                             }
                             composable(Routes.MiniMaxSignIn) {
-                                MiniMaxWebSignInScreen(onBack = { nav.popBackStack() })
+                                // Modal-ish auth surface — full-bleed
+                                // WebView. Edge-glow suppressed so the
+                                // sign-in page owns the whole body.
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "sign in",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondFilled,
+                                    onBack = { nav.popBackStack() },
+                                    edgeGlow = null,
+                                ) {
+                                    MiniMaxWebSignInScreen(onBack = { nav.popBackStack() })
+                                }
                             }
                             composable(Routes.Canvas) {
                                 // The agent's visual channel — a
@@ -439,29 +479,41 @@ fun MytharaRoot(
                                 // (Phase K) — search, filters, stats,
                                 // expandable rows. Companion to the
                                 // bounded AuditLogPanel in Settings.
-                                com.mythara.ui.audit.AuditScreen(onBack = { nav.popBackStack() })
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "audit log",
+                                    glyph = com.mythara.ui.theme.Glyph.AccentBar,
+                                    onBack = { nav.popBackStack() },
+                                ) {
+                                    com.mythara.ui.audit.AuditScreen(onBack = { nav.popBackStack() })
+                                }
                             }
                             composable(Routes.GlassesMemory) {
                                 // Capability Expansion v3 — recent
                                 // face-detected meetings (collapsed
                                 // by contact + 30 min + 50 m) +
                                 // grid of every glasses-sourced photo.
-                                com.mythara.ui.glasses.GlassesMemoryScreen(
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "glasses memory",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondFilled,
                                     onBack = { nav.popBackStack() },
-                                    onOpenContact = { nameKey ->
-                                        // PeopleScreen doesn't yet
-                                        // support a deep-link into
-                                        // a specific contact's
-                                        // detail panel from a route
-                                        // arg, so we just navigate
-                                        // to People — the row tap
-                                        // closes the loop. Future:
-                                        // pass nameKey via a state
-                                        // store the screen reads
-                                        // on open.
-                                        nav.navigate(Routes.People)
-                                    },
-                                )
+                                ) {
+                                    com.mythara.ui.glasses.GlassesMemoryScreen(
+                                        onBack = { nav.popBackStack() },
+                                        onOpenContact = { nameKey ->
+                                            // PeopleScreen doesn't yet
+                                            // support a deep-link into
+                                            // a specific contact's
+                                            // detail panel from a route
+                                            // arg, so we just navigate
+                                            // to People — the row tap
+                                            // closes the loop. Future:
+                                            // pass nameKey via a state
+                                            // store the screen reads
+                                            // on open.
+                                            nav.navigate(Routes.People)
+                                        },
+                                    )
+                                }
                             }
                             composable(Routes.Dashboard) {
                                 // Compact-mode Dashboard — the same
@@ -470,22 +522,28 @@ fun MytharaRoot(
                                 // standalone. Each tile maps to an
                                 // existing destination via this
                                 // single-pane NavController.
-                                DashboardHome(
-                                    onOpenTasks = { nav.navigate(Routes.Tasks) },
-                                    onOpenTimeline = { nav.navigate(Routes.Memory) },
-                                    onOpenDevices = { nav.navigate(Routes.People) },
-                                    onOpenHr = { nav.navigate(Routes.Insights) },
-                                    onOpenHealth = { nav.navigate(Routes.Insights) },
-                                    onOpenSensors = { nav.navigate(Routes.Settings) },
-                                    onOpenSkills = { nav.navigate(Routes.Settings) },
-                                    onOpenAppDrawer = {
-                                        // Pop back to chat first so
-                                        // the amulet's spotlight
-                                        // sentinel can fire from a
-                                        // clean state.
-                                        nav.popBackStack(Routes.Chat, inclusive = false)
-                                    },
-                                )
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "dashboard",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondFilled,
+                                    onBack = { nav.popBackStack() },
+                                ) {
+                                    DashboardHome(
+                                        onOpenTasks = { nav.navigate(Routes.Tasks) },
+                                        onOpenTimeline = { nav.navigate(Routes.Memory) },
+                                        onOpenDevices = { nav.navigate(Routes.People) },
+                                        onOpenHr = { nav.navigate(Routes.Insights) },
+                                        onOpenHealth = { nav.navigate(Routes.Insights) },
+                                        onOpenSensors = { nav.navigate(Routes.Settings) },
+                                        onOpenSkills = { nav.navigate(Routes.Settings) },
+                                        onOpenAppDrawer = {
+                                            // Pop back to chat first so
+                                            // the amulet's spotlight
+                                            // sentinel can fire from a
+                                            // clean state.
+                                            nav.popBackStack(Routes.Chat, inclusive = false)
+                                        },
+                                    )
+                                }
                             }
                         }
                     } else if (isTablet) {

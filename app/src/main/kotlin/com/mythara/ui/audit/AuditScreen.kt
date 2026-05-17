@@ -113,22 +113,16 @@ fun AuditScreen(
             .background(MytharaColors.Bg)
             .padding(WindowInsets.systemBars.asPaddingValues()),
     ) {
-        // Header
+        // Phase D — MytharaScaffold provides header (← back / ▌
+        // audit log). Body keeps the clear action inline as a
+        // right-aligned action row.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.End,
         ) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
-            Text(
-                text = "${Glyph.DiamondFilled} audit log",
-                color = MytharaColors.Charple,
-                style = MaterialTheme.typography.titleMedium,
-            )
             TextButton(onClick = { confirmClear = true }, enabled = entries.isNotEmpty()) {
                 Text(
                     "${Glyph.Cross} clear",

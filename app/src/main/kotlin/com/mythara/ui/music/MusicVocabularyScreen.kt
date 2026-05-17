@@ -106,23 +106,16 @@ fun MusicVocabularyScreen(
             .background(MytharaColors.Bg)
             .padding(insets),
     ) {
-        // Top bar.
+        // Phase D — MytharaScaffold provides header (← back / ◇
+        // music vocabulary). Body keeps the word-count summary
+        // inline as a right-aligned action row.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 12.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.End,
         ) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = "${Glyph.DiamondFilled} music vocabulary",
-                color = MytharaColors.Charple,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f),
-            )
             Text(
                 text = "${vocab.size} ${if (vocab.size == 1) "word" else "words"}",
                 color = MytharaColors.FgDim,

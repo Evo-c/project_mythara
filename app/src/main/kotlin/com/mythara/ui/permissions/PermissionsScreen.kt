@@ -106,24 +106,10 @@ fun PermissionsScreen(
             .background(MytharaColors.Bg)
             .padding(WindowInsets.systemBars.asPaddingValues()),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
-        }
-        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-            Text(
-                text = "PERMISSIONS",
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    color = MytharaColors.Fg, letterSpacing = 3.sp,
-                ),
-            )
-            Spacer(Modifier.height(4.dp))
+        // Phase D — MytharaScaffold provides header (← back / ◇
+        // permissions). Body owns the granted/total summary +
+        // list.
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
             Text(
                 text = "${Glyph.AccentBar} every permission Mythara can hold, in one place. " +
                     "Tap any row to grant, revoke, or change. $granted of $total enabled.",

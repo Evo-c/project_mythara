@@ -184,18 +184,8 @@ fun GlassesMemoryScreen(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
-            Spacer(Modifier.padding(end = 8.dp))
-            Text(
-                text = "${Glyph.DiamondFilled} glasses",
-                color = MytharaColors.Charple,
-                style = MaterialTheme.typography.titleMedium,
-            )
-        }
-        Spacer(Modifier.height(12.dp))
+        // Phase D — MytharaScaffold provides header (← back / ◆
+        // glasses memory). Body owns the loading / content split.
 
         if (ui.loading) {
             Text("loading…", color = MytharaColors.FgDim)

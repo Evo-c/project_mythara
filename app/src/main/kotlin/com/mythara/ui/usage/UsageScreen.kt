@@ -135,16 +135,16 @@ fun UsageScreen(
             .background(MytharaColors.Bg)
             .padding(WindowInsets.systemBars.asPaddingValues()),
     ) {
+        // Phase D — MytharaScaffold provides header (← back / ◇
+        // usage). Body keeps the raw-json + sync action buttons
+        // inline as a right-aligned action row.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.End,
         ) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,

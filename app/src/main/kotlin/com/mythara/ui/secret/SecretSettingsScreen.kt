@@ -88,19 +88,8 @@ fun SecretSettingsScreen(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
-            Spacer(Modifier.padding(end = 8.dp))
-            Text(
-                text = "${Glyph.DiamondFilled} observe",
-                color = MytharaColors.Charple,
-                style = MaterialTheme.typography.titleMedium,
-            )
-        }
-
-        Spacer(Modifier.height(20.dp))
+        // Phase D — MytharaScaffold provides header (← back / ◉
+        // secret); body owns content from here down.
 
         Panel("status") {
             val accent = when (val s = state.observeState) {

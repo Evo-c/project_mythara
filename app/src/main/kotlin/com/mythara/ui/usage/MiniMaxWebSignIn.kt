@@ -146,16 +146,16 @@ fun MiniMaxWebSignInScreen(
             .background(MytharaColors.Bg)
             .padding(WindowInsets.systemBars.asPaddingValues()),
     ) {
+        // Phase D — MytharaScaffold provides header (← back / ◆
+        // sign in). Body keeps the clear-session action inline as
+        // a right-aligned action row.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.End,
         ) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
             TextButton(onClick = {
                 vm.clear { capturedStatus = "session cleared" }
             }) {
@@ -163,13 +163,6 @@ fun MiniMaxWebSignInScreen(
             }
         }
         Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-            Text(
-                text = "MINIMAX SIGN-IN",
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    color = MytharaColors.Fg, letterSpacing = 3.sp,
-                ),
-            )
-            Spacer(Modifier.height(4.dp))
             Text(
                 text = "${Glyph.AccentBar} Sign in to your MiniMax web account below. " +
                     "Mythara captures the session cookies after login (we do NOT see " +
