@@ -297,13 +297,31 @@ fun MytharaRoot(
                                 )
                             }
                             composable(Routes.Face) {
-                                FaceScreen(onBack = { nav.popBackStack() })
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "face",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondOutline,
+                                    onBack = { nav.popBackStack() },
+                                ) {
+                                    FaceScreen(onBack = { nav.popBackStack() })
+                                }
                             }
                             composable(Routes.AboutMe) {
-                                AboutMeScreen(onBack = { nav.popBackStack() })
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "about me",
+                                    glyph = com.mythara.ui.theme.Glyph.Dot,
+                                    onBack = { nav.popBackStack() },
+                                ) {
+                                    AboutMeScreen(onBack = { nav.popBackStack() })
+                                }
                             }
                             composable(Routes.Insights) {
-                                InsightsScreen(onBack = { nav.popBackStack() })
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "insights",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondFilled,
+                                    onBack = { nav.popBackStack() },
+                                ) {
+                                    InsightsScreen(onBack = { nav.popBackStack() })
+                                }
                             }
                             composable(Routes.Settings) {
                                 com.mythara.ui.scaffold.MytharaScaffold(
@@ -331,10 +349,16 @@ fun MytharaRoot(
                                 }
                             }
                             composable(Routes.About) {
-                                AboutScreen(
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "about",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondOutline,
                                     onBack = { nav.popBackStack() },
-                                    onSecretRequest = { secretUnlockOpen = true },
-                                )
+                                ) {
+                                    AboutScreen(
+                                        onBack = { nav.popBackStack() },
+                                        onSecretRequest = { secretUnlockOpen = true },
+                                    )
+                                }
                             }
                             composable(Routes.SecretSettings) {
                                 SecretSettingsScreen(
@@ -343,21 +367,39 @@ fun MytharaRoot(
                                 )
                             }
                             composable(Routes.Notes) {
-                                NotesScreen(onBack = { nav.popBackStack() })
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "notes",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondOutline,
+                                    onBack = { nav.popBackStack() },
+                                ) {
+                                    NotesScreen(onBack = { nav.popBackStack() })
+                                }
                             }
                             composable(Routes.Memory) {
                                 // Lifeline / memory grid — full-pane
                                 // version of the right-pane TimelineGridPane.
-                                com.mythara.ui.lifeline.TimelineGridPane(
-                                    onClose = { nav.popBackStack() },
-                                )
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "memory",
+                                    glyph = com.mythara.ui.theme.Glyph.Pipe,
+                                    onBack = { nav.popBackStack() },
+                                ) {
+                                    com.mythara.ui.lifeline.TimelineGridPane(
+                                        onClose = { nav.popBackStack() },
+                                    )
+                                }
                             }
                             composable(Routes.Tasks) {
                                 // Cross-device task list — full-pane
                                 // version of the right-pane TasksScreenPane.
-                                com.mythara.ui.tasks.TasksScreenPane(
-                                    onClose = { nav.popBackStack() },
-                                )
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "tasks",
+                                    glyph = com.mythara.ui.theme.Glyph.Check,
+                                    onBack = { nav.popBackStack() },
+                                ) {
+                                    com.mythara.ui.tasks.TasksScreenPane(
+                                        onClose = { nav.popBackStack() },
+                                    )
+                                }
                             }
                             composable(Routes.Permissions) {
                                 PermissionsScreen(onBack = { nav.popBackStack() })
@@ -379,8 +421,18 @@ fun MytharaRoot(
                                 // WebView the agent can write
                                 // HTML/JS/canvas content into and read
                                 // structured input back from via the
-                                // window.mythara JS bridge.
-                                com.mythara.ui.canvas.CanvasScreen(onBack = { nav.popBackStack() })
+                                // window.mythara JS bridge. Per plan:
+                                // full-bleed surface, edge-glow
+                                // suppressed since the canvas owns the
+                                // whole body.
+                                com.mythara.ui.scaffold.MytharaScaffold(
+                                    title = "canvas",
+                                    glyph = com.mythara.ui.theme.Glyph.DiamondFilled,
+                                    onBack = { nav.popBackStack() },
+                                    edgeGlow = null,
+                                ) {
+                                    com.mythara.ui.canvas.CanvasScreen(onBack = { nav.popBackStack() })
+                                }
                             }
                             composable(Routes.Audit) {
                                 // Full-screen audit-log deep-dive

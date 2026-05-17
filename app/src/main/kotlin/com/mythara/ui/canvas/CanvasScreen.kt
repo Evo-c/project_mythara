@@ -127,32 +127,30 @@ fun CanvasScreen(
         onDispose { controller.clearIfNotRetained() }
     }
 
+    // Phase C — MytharaScaffold provides header (← back / ◆
+    // canvas). Body owns just the mood badge + WebView. Per plan:
+    // full-bleed; scaffold's edge-glow is suppressed at the wrap
+    // site so the canvas body has the whole vertical band.
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MytharaColors.Bg)
             .padding(WindowInsets.systemBars.asPaddingValues()),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.End,
         ) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
             val mood = MoodSink.current() ?: "—"
             val intervention = MoodVisualMapping.forMood(mood)
             Text(
-                text = "${Glyph.AccentBar} canvas · ${intervention.label}",
+                text = "${Glyph.AccentBar} ${intervention.label}",
                 color = MytharaColors.FgDim,
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
             )
         }
-
-        Spacer(Modifier.height(4.dp))
 
         Box(
             modifier = Modifier

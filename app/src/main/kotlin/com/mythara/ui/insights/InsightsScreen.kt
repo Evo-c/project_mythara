@@ -329,28 +329,21 @@ fun InsightsScreen(
     var selectedKey by remember { mutableStateOf<String?>(null) }
     val textMeasurer = rememberTextMeasurer()
 
+    // Phase C — MytharaScaffold provides the header (← back / ◆
+    // insights) + background. This Column owns only the body
+    // actions (reset view) + the canvas itself.
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MytharaColors.Bg)
             .padding(WindowInsets.systemBars.asPaddingValues()),
     ) {
-        // ---- header ------------------------------------------------
+        // ---- inline actions ---------------------------------------
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
-            Spacer(Modifier.width(4.dp))
-            Text(
-                text = "${Glyph.DiamondFilled} insights",
-                color = MytharaColors.Charple,
-                style = MaterialTheme.typography.titleMedium,
-            )
             Spacer(Modifier.weight(1f))
             if (ui.enriching) {
                 CircularProgressIndicator(

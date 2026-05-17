@@ -66,21 +66,15 @@ fun AboutScreen(
         }
     }
 
+    // Phase C — MytharaScaffold provides header (← back / ◇
+    // about); body owns the wordmark + secret-unlock target.
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MytharaColors.Bg)
             .padding(WindowInsets.systemBars.asPaddingValues())
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
-        }
-
-        Spacer(Modifier.height(20.dp))
 
         // Triple-tap target — the inline wordmark.
         Box(

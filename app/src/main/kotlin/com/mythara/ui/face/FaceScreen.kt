@@ -230,14 +230,9 @@ fun FaceScreen(onBack: () -> Unit, vm: FaceViewModel = hiltViewModel()) {
             )
         }
 
-        Text(
-            text = "‹ chat",
-            style = MaterialTheme.typography.labelLarge.copy(color = CLOUD),
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(20.dp)
-                .clickable(onClick = onBack),
-        )
+        // Phase C — back affordance moved to the MytharaScaffold
+        // header sliver at the top; the in-screen "‹ chat" chip is
+        // removed so the cinema view stays full-bleed.
 
         val status = when {
             speaking -> "● speaking"

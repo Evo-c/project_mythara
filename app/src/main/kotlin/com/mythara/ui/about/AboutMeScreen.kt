@@ -698,31 +698,21 @@ fun AboutMeScreen(
         PermissionController.createRequestPermissionResultContract(),
     ) { vm.refresh() }
 
+    // Phase C — MytharaScaffold provides header (← back / ● about
+    // me); body keeps the refresh action inline + vault summary.
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MytharaColors.Bg)
             .padding(WindowInsets.systemBars.asPaddingValues())
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
-            Spacer(Modifier.width(8.dp))
             TextButton(onClick = { vm.refresh() }) {
                 Text("${Glyph.Refresh} refresh", color = MytharaColors.FgDim)
             }
         }
 
-        Spacer(Modifier.height(12.dp))
-        Text(
-            text = "ABOUT ME",
-            style = MaterialTheme.typography.headlineSmall.copy(
-                color = MytharaColors.Fg, letterSpacing = 3.sp,
-            ),
-        )
         Spacer(Modifier.height(4.dp))
         Text(
             text = "${Glyph.AccentBar} everything Mythara has learned about you · ${ui.vaultTotal} learnings",

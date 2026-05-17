@@ -255,34 +255,22 @@ fun NotesScreen(
     var selectedContactKey by remember { mutableStateOf<String?>(null) }
     val selectedContact = ui.contacts.firstOrNull { it.nameKey == selectedContactKey }
 
+    // Phase C — MytharaScaffold provides the header (← back / ◇
+    // notes). Body owns subtitle + capture panel + filter row +
+    // list.
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MytharaColors.Bg)
             .padding(WindowInsets.systemBars.asPaddingValues())
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) {
-                Text("${Glyph.LeftArrow} back", color = MytharaColors.FgMute)
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = "NOTES",
-            style = MaterialTheme.typography.headlineSmall.copy(
-                color = MytharaColors.Fg, letterSpacing = 3.sp,
-            ),
-        )
-        Spacer(Modifier.height(4.dp))
         Text(
             text = "${Glyph.AccentBar} paste anything you copied, or jot a thought — file it as a memory, a note about a person, or a quick note.",
             style = MaterialTheme.typography.bodySmall.copy(color = MytharaColors.FgDim),
         )
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
         // ---- capture field ----------------------------------------
         Panel("capture") {
