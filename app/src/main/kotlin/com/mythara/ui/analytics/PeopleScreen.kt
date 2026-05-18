@@ -169,20 +169,64 @@ class PeopleViewModel @Inject constructor(
                 buildContactPersona(nameKey)
             }
             _selectedRememberedFacts.value = withContext(Dispatchers.IO) {
-                buildContactRemembered(nameKey)
+                val displayName = profiles.value.firstOrNull { it.nameKey == nameKey }?.displayName
+                buildContactRemembered(nameKey, displayName)
             }
         }
     }
 
-    private suspend fun buildContactRemembered(nameKey: String): ContactRememberedFacts {
+    private suspend fun buildContactRemembered(
+        nameKey: String,
+        displayName: String?,
+    ): ContactRememberedFacts {
         val all = runCatching {
             vault.listByTier(com.mythara.memory.Tier.Semantic, limit = 1000)
         }.getOrDefault(emptyList())
+
+        // Tokens we'll accept as "this row is about THIS contact":
+        //   1. exact facet match on contact:<key> or target:contact:<key>
+        //   2. any token that's part of the contact's name (handles the
+        //      common case where the agent wrote target=contact:rose for
+        //      "Roselyn Mathew" whose nameKey is roselyn-mathew, or
+        //      target=contact:roselyn_mathew with an underscore variant).
+        val keyTokens = buildSet {
+            add(nameKey.lowercase())
+            for (part in nameKey.split('-', '_', ' ')) {
+                if (part.length >= 3) add(part.lowercase())
+            }
+            displayName?.let { name ->
+                add(name.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-'))
+                for (part in name.split(' ', ',', '/', '.')) {
+                    val t = part.lowercase().trim().filter { it.isLetterOrDigit() }
+                    if (t.length >= 3) add(t)
+                }
+            }
+        }
+
         val rows = all.filter { row ->
             val facets = vault.decodeFacets(row)
-            ("contact:$nameKey" in facets || "target:contact:$nameKey" in facets) &&
-                "src:user-asked" in facets
+            if ("src:user-asked" !in facets) return@filter false
+            // Exact facet hit
+            if (("contact:$nameKey" in facets) || ("target:contact:$nameKey" in facets)) {
+                return@filter true
+            }
+            // Token-based facet hit (e.g. contact:rose for "Rose")
+            val facetMatch = facets.any { f ->
+                (f.startsWith("contact:") || f.startsWith("target:contact:")) &&
+                    keyTokens.any { tk -> f.endsWith(":$tk") }
+            }
+            if (facetMatch) return@filter true
+            // Content-based fallback — the agent stored a self-tagged
+            // row but the body clearly names this contact. Last resort
+            // so a non-perfect target= argument still lands on the
+            // right card.
+            val hay = row.content.lowercase()
+            keyTokens.any { tk -> tk.length >= 3 && hay.contains(tk) }
         }
+        android.util.Log.d(
+            "Mythara/PeopleVM",
+            "buildContactRemembered nameKey=$nameKey tokens=$keyTokens matched=${rows.size}",
+        )
         if (rows.isEmpty()) return ContactRememberedFacts(nameKey)
         var birthday: String? = null
         var anniversary: String? = null
@@ -1206,11 +1250,19 @@ private fun ProfileDetail(
 
         // ── Mythara remembers — birthday / anniversary / preferences /
         //   notes the user has told the agent about this contact.
-        //   The card hides when there's nothing remembered yet so it
-        //   doesn't add visual noise to brand-new contacts.
-        if (remembered != null && !remembered.isEmpty()) {
-            Spacer(Modifier.height(12.dp))
-            DetailCard("${Glyph.DiamondOutline} Mythara remembers") {
+        //   Always renders (even empty) so users can see the panel
+        //   exists and know the agent learns about people over time.
+        Spacer(Modifier.height(12.dp))
+        DetailCard("${Glyph.DiamondOutline} Mythara remembers") {
+            if (remembered == null || remembered.isEmpty()) {
+                Text(
+                    text = "Nothing yet about ${p.displayName}. Tell the agent something — " +
+                        "\"${p.displayName}'s birthday is March 5\", \"${p.displayName} loves jazz\" — " +
+                        "and it'll land here.",
+                    color = MytharaColors.FgDim,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else {
                 remembered.birthday?.let {
                     DetailRow("birthday", formatRememberedDate(it))
                 }

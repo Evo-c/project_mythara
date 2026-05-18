@@ -203,7 +203,11 @@ class RememberTool @Inject constructor(
         runCatching { heartbeat.get().fireNow() }
             .onFailure { Log.w(TAG, "immediate sync kick failed: ${it.message}") }
 
-        Log.d(TAG, "remembered: \"${content.take(80)}\" (embedded=${embedding != null})")
+        Log.d(
+            TAG,
+            "remembered: \"${content.take(80)}\" target=$target kind=$kind " +
+                "value=${value ?: "-"} (embedded=${embedding != null})",
+        )
         val payload = buildJsonObject {
             put("ok", true)
             put("stored", content)
