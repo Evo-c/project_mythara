@@ -29,7 +29,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -169,8 +174,12 @@ class PeopleViewModel @Inject constructor(
                 buildContactPersona(nameKey)
             }
             _selectedRememberedFacts.value = withContext(Dispatchers.IO) {
-                val displayName = profiles.value.firstOrNull { it.nameKey == nameKey }?.displayName
-                buildContactRemembered(nameKey, displayName)
+                val profile = profiles.value.firstOrNull { it.nameKey == nameKey }
+                buildContactRemembered(
+                    nameKey = nameKey,
+                    displayName = profile?.displayName,
+                    aliases = parseStringList(profile?.aliasesJson ?: "[]"),
+                )
             }
         }
     }
@@ -178,54 +187,65 @@ class PeopleViewModel @Inject constructor(
     private suspend fun buildContactRemembered(
         nameKey: String,
         displayName: String?,
+        aliases: List<String>,
     ): ContactRememberedFacts {
         val all = runCatching {
             vault.listByTier(com.mythara.memory.Tier.Semantic, limit = 1000)
         }.getOrDefault(emptyList())
 
-        // Tokens we'll accept as "this row is about THIS contact":
-        //   1. exact facet match on contact:<key> or target:contact:<key>
-        //   2. any token that's part of the contact's name (handles the
-        //      common case where the agent wrote target=contact:rose for
-        //      "Roselyn Mathew" whose nameKey is roselyn-mathew, or
-        //      target=contact:roselyn_mathew with an underscore variant).
-        val keyTokens = buildSet {
-            add(nameKey.lowercase())
-            for (part in nameKey.split('-', '_', ' ')) {
-                if (part.length >= 3) add(part.lowercase())
-            }
-            displayName?.let { name ->
-                add(name.lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-'))
-                for (part in name.split(' ', ',', '/', '.')) {
-                    val t = part.lowercase().trim().filter { it.isLetterOrDigit() }
-                    if (t.length >= 3) add(t)
-                }
-            }
-        }
+        // Strict acceptance for "this row is about THIS contact":
+        //   1. EXACT facet hit on `contact:<nameKey>` or
+        //      `target:contact:<nameKey>` — the agent stored it with
+        //      the right key.
+        //   2. Facet hit where the suffix matches a normalised ALIAS
+        //      (or the displayName itself) the user added on the
+        //      contact card. e.g. `contact:rose` matches the
+        //      Roselyn-Mathew profile when the user has added "Rose"
+        //      as an alias.
+        //   3. Content fallback: the row's body contains the FULL
+        //      displayName or a FULL alias as a phrase (case-
+        //      insensitive). Critically, NOT a single short token —
+        //      that's what made every "rose" / "anurag" / "ankur"
+        //      memory leak into every contact's card.
+        //
+        // No more partial-token facet matching; no single-token
+        // content fallback. If the agent wrote target=contact:rose
+        // and the user wants it on Roselyn Mathew's card, they
+        // add "rose" as an alias on her contact card.
+        val normalizedAliases = aliases
+            .mapNotNull { a -> a.trim().lowercase().takeIf { it.length >= 2 } }
+            .distinct()
+        val aliasFacetSuffixes = normalizedAliases
+            .map { it.replace(Regex("[^a-z0-9]+"), "-").trim('-') }
+            .filter { it.isNotBlank() }
+            .toSet()
+        val phraseMatchers = buildList {
+            displayName?.takeIf { it.isNotBlank() }?.let { add(it.lowercase()) }
+            addAll(normalizedAliases)
+        }.distinct()
 
         val rows = all.filter { row ->
             val facets = vault.decodeFacets(row)
             if ("src:user-asked" !in facets) return@filter false
-            // Exact facet hit
-            if (("contact:$nameKey" in facets) || ("target:contact:$nameKey" in facets)) {
-                return@filter true
+            // (1) + (2): facet-level match
+            val facetHit = facets.any { f ->
+                if (!(f.startsWith("contact:") || f.startsWith("target:contact:"))) return@any false
+                val suffix = f.substringAfterLast(':')
+                suffix == nameKey || suffix in aliasFacetSuffixes
             }
-            // Token-based facet hit (e.g. contact:rose for "Rose")
-            val facetMatch = facets.any { f ->
-                (f.startsWith("contact:") || f.startsWith("target:contact:")) &&
-                    keyTokens.any { tk -> f.endsWith(":$tk") }
-            }
-            if (facetMatch) return@filter true
-            // Content-based fallback — the agent stored a self-tagged
-            // row but the body clearly names this contact. Last resort
-            // so a non-perfect target= argument still lands on the
-            // right card.
+            if (facetHit) return@filter true
+            // (3): content phrase match — must contain the FULL
+            // displayName or a FULL alias.
+            if (phraseMatchers.isEmpty()) return@filter false
             val hay = row.content.lowercase()
-            keyTokens.any { tk -> tk.length >= 3 && hay.contains(tk) }
+            phraseMatchers.any { phrase ->
+                hay.contains(phrase)
+            }
         }
         android.util.Log.d(
             "Mythara/PeopleVM",
-            "buildContactRemembered nameKey=$nameKey tokens=$keyTokens matched=${rows.size}",
+            "buildContactRemembered nameKey=$nameKey display=$displayName " +
+                "aliases=$normalizedAliases matched=${rows.size}",
         )
         if (rows.isEmpty()) return ContactRememberedFacts(nameKey)
         var birthday: String? = null
@@ -381,6 +401,48 @@ class PeopleViewModel @Inject constructor(
         viewModelScope.launch {
             ContactPhoto.clearOverride(appContext, nameKey)
             runCatching { repo.dao.updatePhotoUri(nameKey, null) }
+        }
+    }
+
+    /** Append an alias (other name / nickname) to a contact. Used to
+     *  bind a memory the agent stored under a different target key
+     *  (e.g. `contact:rose`) to a contact whose canonical nameKey is
+     *  `roselyn-mathew`. The matcher in [buildContactRemembered] uses
+     *  the alias as both a facet-suffix and a phrase candidate. */
+    fun addContactAlias(nameKey: String, alias: String) {
+        val trimmed = alias.trim()
+        if (trimmed.length < 2) return
+        viewModelScope.launch {
+            val current = runCatching { repo.dao.byKey(nameKey) }.getOrNull() ?: return@launch
+            val list = parseStringList(current.aliasesJson).toMutableList()
+            if (list.any { it.equals(trimmed, ignoreCase = true) }) return@launch
+            list.add(trimmed)
+            runCatching {
+                repo.dao.updateAliases(
+                    nameKey,
+                    JSON.encodeToString(ListSerializer(String.serializer()), list),
+                )
+            }
+            // Re-run the remembered-facts build so the panel refreshes
+            // immediately with the newly-bound rows.
+            loadLivePersonaFor(nameKey)
+        }
+    }
+
+    /** Drop an alias from the contact's list. Symmetric with
+     *  [addContactAlias]. */
+    fun removeContactAlias(nameKey: String, alias: String) {
+        viewModelScope.launch {
+            val current = runCatching { repo.dao.byKey(nameKey) }.getOrNull() ?: return@launch
+            val list = parseStringList(current.aliasesJson)
+                .filterNot { it.equals(alias, ignoreCase = true) }
+            runCatching {
+                repo.dao.updateAliases(
+                    nameKey,
+                    JSON.encodeToString(ListSerializer(String.serializer()), list),
+                )
+            }
+            loadLivePersonaFor(nameKey)
         }
     }
 
@@ -1248,6 +1310,17 @@ private fun ProfileDetail(
             )
         }
 
+        // ── Aliases — user-curated nicknames / alternate names the
+        //   matcher uses to bind memories the agent stored under a
+        //   different target key. Add "Rose" here so all the agent's
+        //   `target=contact:rose` rows land on this card.
+        Spacer(Modifier.height(12.dp))
+        ContactAliasesCard(
+            aliasesJson = p.aliasesJson,
+            onAdd = { vm.addContactAlias(p.nameKey, it) },
+            onRemove = { vm.removeContactAlias(p.nameKey, it) },
+        )
+
         // ── Mythara remembers — birthday / anniversary / preferences /
         //   notes the user has told the agent about this contact.
         //   Always renders (even empty) so users can see the panel
@@ -1736,6 +1809,112 @@ private fun Avatar(profile: ContactProfileRow, large: Boolean = false) {
 private val TIME_FMT = SimpleDateFormat("MMM d, HH:mm", Locale.US)
 
 private fun formatTs(ts: Long): String = TIME_FMT.format(Date(ts))
+
+/**
+ * "Aliases" detail card — surfaces the current alias list for a
+ * contact and lets the user add / remove entries. Aliases drive the
+ * `Mythara remembers` matcher: when the agent stored a memory under
+ * `target=contact:rose` and you want it on Roselyn Mathew's card,
+ * add "rose" here.
+ *
+ * Renders existing aliases as chips with a × tap to remove, plus a
+ * compact text field + ↦ button to add new ones. Always shown so
+ * the affordance is discoverable even before any aliases exist.
+ */
+@Composable
+private fun ContactAliasesCard(
+    aliasesJson: String,
+    onAdd: (String) -> Unit,
+    onRemove: (String) -> Unit,
+) {
+    val current = remember(aliasesJson) { parseStringList(aliasesJson) }
+    var draft by remember { mutableStateOf("") }
+    DetailCard("${Glyph.DiamondOutline} aliases / nicknames") {
+        Text(
+            text = "Names you call this person that the agent might use when storing memories. " +
+                "Example: add \"Rose\" so memories tagged contact:rose land on this card.",
+            color = MytharaColors.FgDim,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(8.dp))
+        if (current.isNotEmpty()) {
+            androidx.compose.foundation.layout.FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                current.forEach { alias ->
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MytharaColors.Charple.copy(alpha = 0.18f))
+                            .border(1.dp, MytharaColors.Charple.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                            .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = alias,
+                            color = MytharaColors.Fg,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Spacer(Modifier.size(4.dp))
+                        Text(
+                            text = "×",
+                            color = MytharaColors.Sriracha,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .clickable { onRemove(alias) }
+                                .padding(horizontal = 4.dp),
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            BasicTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                singleLine = true,
+                cursorBrush = SolidColor(MytharaColors.Charple),
+                textStyle = TextStyle(color = MytharaColors.Fg, fontSize = 14.sp),
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MytharaColors.SurfaceMid)
+                    .border(1.dp, MytharaColors.SurfaceHigh, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                decorationBox = { inner ->
+                    if (draft.isEmpty()) {
+                        Text(
+                            text = "add alias (e.g. \"Rose\")",
+                            color = MytharaColors.FgDim,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    inner()
+                },
+            )
+            Spacer(Modifier.size(6.dp))
+            TextButton(
+                onClick = {
+                    if (draft.trim().isNotEmpty()) {
+                        onAdd(draft.trim())
+                        draft = ""
+                    }
+                },
+                enabled = draft.trim().isNotEmpty(),
+            ) {
+                Text(
+                    text = "${Glyph.Arrow} add",
+                    color = if (draft.trim().isNotEmpty()) MytharaColors.Charple else MytharaColors.FgMute,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+        }
+    }
+}
 
 /** Render an ISO date stored by [RememberTool] (YYYY-MM-DD or
  *  MM-DD when the year is unknown) as a friendly "March 5" or
