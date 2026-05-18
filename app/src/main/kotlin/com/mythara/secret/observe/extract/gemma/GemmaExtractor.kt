@@ -59,6 +59,18 @@ class GemmaExtractor @Inject constructor(
 ) {
 
     @Volatile private var engine: Engine? = null
+    /** True when the currently-loaded engine was initialised with a
+     *  vision backend (the multimodal `EngineConfig` path succeeded).
+     *  False when we fell back to text-only because the on-disk
+     *  model file isn't compatible with LiteRT-LM 0.11's multimodal
+     *  init (e.g. legacy Gemma 4 E2B exports with multiple vision
+     *  encoder signatures).
+     *
+     *  [describeImage] consults this flag and bails out cleanly when
+     *  vision isn't available — handing `Content.ImageBytes` to a
+     *  text-only engine SIGSEGVs the native compute thread (the
+     *  exact tombstone we kept seeing on photo-captioning runs). */
+    @Volatile private var engineHasVision: Boolean = false
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -208,6 +220,15 @@ class GemmaExtractor @Inject constructor(
             runCatching {
                 inferenceLock.withLock {
                     val eng = ensureEngine() ?: return@withLock null
+                    // Hard-gate: never pass image bytes to a text-only
+                    // engine. The native vision tokeniser is unloaded
+                    // and the JNI layer NULL-derefs immediately.
+                    // VisionService then cascades to cloud Gemini /
+                    // MiniMax-VL — the existing graceful-fallback path.
+                    if (!engineHasVision) {
+                        Log.d(TAG, "describeImage skipped — engine loaded text-only (vision init failed)")
+                        return@withLock null
+                    }
                     val reply: Message = eng.createConversation().use { conv ->
                         // Variadic Content constructor lets us mix
                         // image + text in one message. Gemma 4 reads
@@ -233,31 +254,61 @@ class GemmaExtractor @Inject constructor(
     fun release() {
         runCatching { engine?.close() }
         engine = null
+        engineHasVision = false
     }
 
     @Synchronized
     private fun ensureEngine(): Engine? {
         engine?.let { return it }
         val path = store.pathOrNull() ?: return null
-        return runCatching {
-            Log.d(TAG, "loading Gemma 4 E2B from $path")
-            // CPU backend is the universally-supported path. GPU/NPU
-            // dispatch is a follow-up optimisation — Backend is an enum
-            // in 0.8.0, so swapping is a one-line change once we trust
-            // the GPU path on Tensor G3/G4.
+
+        // Try multimodal init first. The `visionBackend` arg unlocks
+        // Gemma 4 E2B's vision tower so `Content.ImageBytes` can be
+        // routed through the image tokeniser instead of NULL-derefing
+        // in the JNI layer (the `engine/<tid>` SIGSEGV the
+        // photo-captioning runs kept tombstoning on).
+        //
+        // If THIS init fails — common with older Gemma 4 E2B exports
+        // that ship multiple vision-encoder signatures, which
+        // LiteRT-LM 0.11 rejects ("Vision Encoder model must have
+        // exactly one signature but got 3") — we fall back to a
+        // text-only init so persona / mood / summary extractors keep
+        // working. The vision flag stays false and [describeImage]
+        // cleanly bails out, letting VisionService cascade to cloud.
+        val multimodal = runCatching {
+            Log.d(TAG, "loading Gemma 4 E2B from $path (multimodal)")
             val config = EngineConfig(
                 modelPath = path,
-                // Backend went from enum value to sealed class in
-                // LiteRT-LM 0.10.x — Backend.CPU(numOfThreads) lets the
-                // SDK pick a sensible thread count when null.
+                backend = Backend.CPU(null),
+                visionBackend = Backend.CPU(null),
+                maxNumImages = 1,
+            )
+            Engine(config).also { it.initialize() }
+        }.getOrElse { e ->
+            Log.w(TAG, "multimodal init failed (${e.message}); retrying text-only")
+            null
+        }
+
+        if (multimodal != null) {
+            engine = multimodal
+            engineHasVision = true
+            return multimodal
+        }
+
+        return runCatching {
+            Log.d(TAG, "loading Gemma 4 E2B from $path (text-only fallback)")
+            val config = EngineConfig(
+                modelPath = path,
                 backend = Backend.CPU(null),
             )
             Engine(config).also { eng ->
                 eng.initialize()
                 engine = eng
+                engineHasVision = false
             }
         }.getOrElse { e ->
-            Log.e(TAG, "Gemma init failed: ${e.message}", e)
+            Log.e(TAG, "Gemma init failed (text-only too): ${e.message}", e)
+            engineHasVision = false
             null
         }
     }
