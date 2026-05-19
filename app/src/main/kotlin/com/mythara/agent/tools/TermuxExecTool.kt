@@ -65,11 +65,15 @@ class TermuxExecTool @Inject constructor(
 ) : Tool {
     override val name = "termux_exec"
     override val description =
-        "Run a shell command inside Termux's full GNU/Linux userland (apt-installable Debian " +
-            "packages, persistent home dir, real TTY). PREFER this over run_shell when Termux is " +
-            "installed — bare command names are auto-resolved against /data/data/com.termux/files/" +
-            "usr/bin. Returns {status, exitCode, stdout, stderr}. Falls through to a structured " +
-            "error when Termux isn't installed so you can fall back to run_shell."
+        "DEFAULT shell tool when Termux is installed. Runs ONE binary inside Termux's full " +
+            "GNU/Linux userland with persistent \$HOME and apt-installable packages. " +
+            "`command` is JUST a binary name (e.g. \"curl\", \"git\", \"python\") — NEVER a " +
+            "shell pipeline. For pipelines / && chains / \$VAR expansion, use command=\"sh\" " +
+            "with args=[\"-c\",\"<full pipeline as one string>\"]. Examples: " +
+            "(curl -sI URL) → {command:\"curl\", args:[\"-sI\",\"URL\"]}; " +
+            "(curl URL | jq .x) → {command:\"sh\", args:[\"-c\",\"curl URL | jq .x\"]}. " +
+            "Returns {status:\"ok\", exitCode, stdout, stderr}; falls back to structured error " +
+            "when Termux isn't installed."
 
     override val parameters = buildJsonObject {
         put("type", "object")
@@ -78,14 +82,22 @@ class TermuxExecTool @Inject constructor(
                 put("type", "string")
                 put(
                     "description",
-                    "Binary to run. Bare name (e.g. 'ls', 'python', 'git') resolves against " +
-                        "/data/data/com.termux/files/usr/bin/. Absolute paths (e.g. " +
-                        "'/system/bin/echo') are used as-is.",
+                    "ONE binary to run — JUST the binary name or path. NEVER a shell pipeline. " +
+                        "Bare names (e.g. 'curl', 'git', 'python') resolve against " +
+                        "/data/data/com.termux/files/usr/bin/. Absolute paths used as-is. " +
+                        "If you need pipes, redirection, &&, ||, or \$VAR expansion, set " +
+                        "command='sh' and put the WHOLE pipeline as ONE string in args[1] " +
+                        "after args[0]='-c'.",
                 )
             })
             put("args", buildJsonObject {
                 put("type", "array")
-                put("description", "Arguments to the binary. Each entry must be a string.")
+                put(
+                    "description",
+                    "Arguments to the binary, each as a separate string. For sh -c pipelines, " +
+                        "use exactly two args: ['-c', 'the full pipeline as one string']. " +
+                        "Example: ['-c', 'curl -s https://api.example.com | jq .field'].",
+                )
                 put("items", buildJsonObject { put("type", "string") })
             })
             put("workdir", buildJsonObject {

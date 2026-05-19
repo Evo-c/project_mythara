@@ -57,6 +57,11 @@ class AgentLoop @Inject constructor(
      *  filesystem paths, denies obviously-destructive shell
      *  patterns, and will host future auto-approval policies. */
     private val hookRunner: HookRunner,
+    /** Detects whether Termux is installed + verified so the system
+     *  prompt can decisively promote `termux_exec` as the default
+     *  shell path when it's available — without burning context
+     *  budget on devices where it isn't. */
+    private val termuxAvailability: com.mythara.services.TermuxAvailability,
 ) {
 
     /** Cached on first read — DeviceIdStore is a stable per-install
@@ -231,6 +236,48 @@ class AgentLoop @Inject constructor(
                         "tools + a short description. If they say no or change topic, drop it.",
             )
         }
+
+        // Dynamic Termux preference — when Termux is installed AND the
+        // user has clicked Verify in Settings, inject a decisive
+        // system message so the model picks `termux_exec` over
+        // `run_shell` for shell work. The static TERMUX BRIDGE block
+        // in the long system prompt explains both tools; this dynamic
+        // line is what actually shifts the picker because per-turn
+        // context outweighs the long static block in practice. Skipped
+        // on devices without Termux to keep context tight.
+        val termuxState = runCatching { termuxAvailability.state() }
+            .getOrDefault(com.mythara.services.TermuxAvailability.State.NotInstalled)
+        val termuxPreferenceSystem: ChatMessage? = when (termuxState) {
+            com.mythara.services.TermuxAvailability.State.Ready,
+            com.mythara.services.TermuxAvailability.State.ReadyMissingApi -> ChatMessage(
+                role = "system",
+                content =
+                    "TERMUX IS LIVE on this device — `termux_exec` is now your DEFAULT shell. " +
+                        "Use it for ALL shell work (curl, jq, grep, sed, ls, cat, git, python, " +
+                        "ssh, etc.). `run_shell` becomes a fallback to try only when termux_exec " +
+                        "returns a structured error.\n\n" +
+                        "`termux_exec` argument shape — get this right on the FIRST call:\n" +
+                        "  • `command` is JUST a binary name or path (e.g. \"curl\", \"git\", " +
+                        "\"sh\"). Never pack a pipeline into it.\n" +
+                        "  • `args` is a list of arguments to that binary.\n" +
+                        "  • For shell pipelines / variable substitution / && chains, use " +
+                        "command=\"sh\" with args=[\"-c\",\"<your full pipeline>\"]. The pipeline " +
+                        "goes in ONE -c arg as a single string.\n\n" +
+                        "Examples:\n" +
+                        "  • Battery: termux_api(api=\"battery-status\")\n" +
+                        "  • One binary: termux_exec(command=\"curl\", args=[\"-sI\",\"https://example.com\"])\n" +
+                        "  • Pipeline:   termux_exec(command=\"sh\", args=[\"-c\",\"curl -s https://api.example.com/x | jq .field\"])\n\n" +
+                        "Prefer ONE pipeline call over many round-trips — saves latency and " +
+                        "context. Also: " + (
+                        if (termuxState == com.mythara.services.TermuxAvailability.State.Ready)
+                            "Termux:API companion is installed → termux_api is available for clipboard / battery / location / camera / sensors / TTS / vibrate / toast / notification / share / torch."
+                        else
+                            "Termux:API companion is NOT installed → termux_api will return command-not-found. Tell the user once if they ask for a platform feature; don't keep retrying."
+                        ),
+            )
+            else -> null
+        }
+
         // Final mood for downstream prosody (TTS pitch/rate, EL voice
         // settings). currentMood wins when present.
         val effectiveMood = currentMood ?: moodTrend
@@ -660,6 +707,7 @@ class AgentLoop @Inject constructor(
                 if (moodSystem != null) add(moodSystem)
                 if (livePersonaSystem != null) add(livePersonaSystem)
                 if (skillOfferSystem != null) add(skillOfferSystem)
+                if (termuxPreferenceSystem != null) add(termuxPreferenceSystem)
                 if (autoReplySystem != null) add(autoReplySystem)
                 if (autoTriageSystem != null) add(autoTriageSystem)
                 if (notifSystem != null) add(notifSystem)

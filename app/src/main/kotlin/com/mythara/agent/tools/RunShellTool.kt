@@ -50,21 +50,36 @@ class RunShellTool @Inject constructor(
 ) : Tool {
     override val name = "run_shell"
     override val description =
-        "Run a Linux shell command in Mythara's Android sandbox. PRIMARY path for any Linux task — " +
-            "ls/cat/grep/sed/awk/sort/find/curl/wget/ps/ss/ip/tar/chmod/mkdir/mv/cp/rm/kill/etc. " +
-            "all work via toybox + GNU. Use `sh -c '<pipeline>'` for chained commands. " +
-            "Prefer this over linux_vm for anything that doesn't need apt-installable Debian packages."
+        "FALLBACK shell — use `termux_exec` first when Termux is installed (the dynamic system " +
+            "prompt says so). Reach for run_shell when termux_exec returns a structured error or " +
+            "isn't available. Runs ONE binary in Mythara's app sandbox (toybox + GNU subset; no " +
+            "apt). `cmd` is JUST a binary name — NEVER a shell pipeline. For pipes, &&, " +
+            "redirection, or \$VAR expansion, use cmd='sh' with args=['-c','<full pipeline " +
+            "as one string>']. Examples: (curl -sI URL) → {cmd:'curl', args:['-sI','URL']}; " +
+            "(ls /sdcard | head -5) → {cmd:'sh', args:['-c','ls /sdcard | head -5']}. " +
+            "Allowlisted binaries only — anything else returns {status:'blocked'}."
 
     override val parameters = buildJsonObject {
         put("type", "object")
         put("properties", buildJsonObject {
             put("cmd", buildJsonObject {
                 put("type", "string")
-                put("description", "Binary to run (must be on the allowlist). E.g. 'getprop', 'dumpsys'.")
+                put(
+                    "description",
+                    "ONE binary to run — JUST the name (e.g. 'getprop', 'curl', 'dumpsys'). " +
+                        "NEVER a shell pipeline. For pipes / && chains / \$VAR expansion, set " +
+                        "cmd='sh' and put the WHOLE pipeline as ONE string in args[1] after " +
+                        "args[0]='-c'. Must be on the allowlist.",
+                )
             })
             put("args", buildJsonObject {
                 put("type", "array")
-                put("description", "Arguments to the binary. Each must be a string.")
+                put(
+                    "description",
+                    "Arguments to the binary, each as a separate string. For sh -c pipelines: " +
+                        "['-c', 'the full pipeline as one string']. Example: " +
+                        "['-c', 'curl -s URL | grep -oE pattern'].",
+                )
                 put("items", buildJsonObject { put("type", "string") })
             })
             put("timeout_ms", buildJsonObject {
