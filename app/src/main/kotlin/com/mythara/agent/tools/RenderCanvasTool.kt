@@ -108,6 +108,24 @@ class RenderCanvasTool @Inject constructor(
         val retain = args["retain"]?.jsonPrimitive?.booleanOrNull() ?: false
         val autoNavigate = args["auto_navigate"]?.jsonPrimitive?.booleanOrNull() ?: true
 
+        // Diagnostic — log template + body preview so we can see why
+        // a WebGL render came out blank (most common cause: the
+        // agent didn't pick template="webgl" so THREE wasn't loaded).
+        val usesThree = rawHtml.contains("THREE.") || rawHtml.contains("mythara.three")
+        val templateLoadsThree = template == "webgl" || template == "webgl-preact"
+        android.util.Log.d(
+            "Mythara/Canvas",
+            "render template=$template mode=$mode bodyLen=${rawHtml.length} " +
+                "usesThree=$usesThree templateLoadsThree=$templateLoadsThree" +
+                if (usesThree && !templateLoadsThree)
+                    " — MISMATCH: body uses THREE but template doesn't load it"
+                else "",
+        )
+        android.util.Log.d(
+            "Mythara/Canvas",
+            "body preview: ${rawHtml.take(280).replace('\n', '·')}",
+        )
+
         val wrapped = when (template) {
             "blank" -> rawHtml
             "tailwind" -> wrapTailwind(rawHtml, withPreact = false, withThree = false)

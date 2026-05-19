@@ -47,6 +47,13 @@ class UpdateCanvasTool @Inject constructor(
     override suspend fun execute(args: JsonObject): ToolResult {
         val js = args["js"]?.jsonPrimitive?.contentOrNull()?.trim().orEmpty()
         if (js.isBlank()) return ToolResult.fail("js must be a non-empty JavaScript snippet")
+        // Log the snippet so update_canvas misuses (e.g. trying to
+        // set up a Three.js scene from scratch in update_canvas
+        // instead of inline in render_canvas) are visible in logcat.
+        android.util.Log.d(
+            "Mythara/Canvas",
+            "update_canvas jsLen=${js.length} preview=${js.take(240).replace('\n', '·')}",
+        )
         controller.updateJs(js)
         return ToolResult.ok("queued ${js.length}-char js snippet")
     }
