@@ -232,22 +232,20 @@ fun ContactDetailScreen(
             )
         }
         data?.row?.let { row ->
+            // ─── Personality — the headline card. Big Five bars +
+            //     mythara's prose insights live together at the top
+            //     of the page so the first thing the user sees is
+            //     "who is this person, in Mythara's read". Always
+            //     rendered (bars show "—" + tiered confidence
+            //     disclaimer when sample size is still 0).
+            item("personality") { PersonalityCard(row = row) }
             item("stats") { StatsCard(row = row) }
             row.relationshipSummary?.takeIf { it.isNotBlank() }?.let {
                 item("summary") { MemoryCard(title = "relationship summary", body = it) }
             }
-            row.personalityInsights?.takeIf { it.isNotBlank() }?.let {
-                item("insights") { MemoryCard(title = "what mythara remembers", body = it) }
-            }
             row.userNotes?.takeIf { it.isNotBlank() }?.let {
                 item("notes") { MemoryCard(title = "your notes", body = it) }
             }
-            // Always render the Big Five card — even with 0 observed
-            // facts; the bars fade to grey and the disclaimer below
-            // tells the user Mythara is still learning. This way the
-            // dimension labels are always visible as a hint of what
-            // gets tracked.
-            item("big5") { BigFiveCard(row = row) }
             val notable = decodeStringList(row.notableTraitsJson)
             if (notable.isNotEmpty()) {
                 item("traits") { ChipsCard(title = "notable traits", chips = notable) }
@@ -502,9 +500,16 @@ private fun MemoryCard(title: String, body: String) {
     }
 }
 
+/**
+ * Headline "who is this person" card — Big Five trait bars on top,
+ * confidence disclaimer in the middle, and Mythara's prose
+ * personality insights (`how to message them`) below in the same
+ * card. Sits as the FIRST card under the header so the user reads
+ * personality before raw stats.
+ */
 @Composable
-private fun BigFiveCard(row: ContactProfileRow) {
-    DetailCard(title = "● big five — mythara's read") {
+private fun PersonalityCard(row: ContactProfileRow) {
+    DetailCard(title = "● personality — mythara's read") {
         TraitBar("openness", row.openness, MytharaColors.Charple)
         TraitBar("conscientiousness", row.conscientiousness, MytharaColors.Malibu)
         TraitBar("extraversion", row.extraversion, MytharaColors.Bok)
@@ -523,6 +528,45 @@ private fun BigFiveCard(row: ContactProfileRow) {
             color = MytharaColors.FgDim,
             style = MaterialTheme.typography.labelSmall,
         )
+        // Prose insights — folded into the same card so personality
+        // bars + the narrative read it grounds in arrive as one unit.
+        // Multi-paragraph bodies get the same blank-line splitter +
+        // 20 sp line-height treatment used by [MemoryCard], plus a
+        // small accent divider above so the prose visually clicks
+        // onto the bars without a hard card break.
+        row.personalityInsights?.takeIf { it.isNotBlank() }?.let { insights ->
+            Spacer(Modifier.height(10.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(MytharaColors.Charple.copy(alpha = 0.25f)),
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = "◇ how mythara reads them",
+                color = MytharaColors.Charple,
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+            )
+            Spacer(Modifier.height(6.dp))
+            val paragraphs = remember(insights) {
+                insights.trim().split(Regex("\\n\\s*\\n"))
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+            }
+            paragraphs.forEachIndexed { i, para ->
+                if (i > 0) Spacer(Modifier.height(8.dp))
+                Text(
+                    text = para,
+                    color = MytharaColors.Fg,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        lineHeight = androidx.compose.ui.unit.TextUnit(
+                            20f, androidx.compose.ui.unit.TextUnitType.Sp,
+                        ),
+                    ),
+                )
+            }
+        }
     }
 }
 
