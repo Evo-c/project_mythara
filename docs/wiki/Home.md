@@ -1,10 +1,24 @@
-# Mythara wiki
+# Project M.Y.T.H.A.R.A — wiki
+
+> **M**ind **Y**oked **T**onal **H**aptic **A**daptive **R**esonant **A**ssistant
 
 > An open-source, local-first, fully-private **agentic AI mobile OS layer** for Android — an alternative to Google's "Android is now an intelligence system" pitch and the always-on cloud-Gemini posture of Android 17.
 
 ![Mythara — Home · Alerts · People · Appearance](https://raw.githubusercontent.com/ankurCES/project_mythara/main/docs/preview/hero.png)
 
 Pick a section below — or start with [Why Mythara](Why-Mythara) if you're new.
+
+## What the backronym means
+
+| Letter | Word | Design constraint baked into the runtime |
+|---|---|---|
+| **M** | **Mind** | Agent works on YOUR mental model — local Big Five + values + preferences derived from your real conversations. |
+| **Y** | **Yoked** | Harnessed to your phone via 65+ tools (calls, SMS, WhatsApp, calendar, alarms, shell, Termux, face recognition). Perceives, decides, acts through hardware you own. |
+| **T** | **Tonal** | Tone-aware rendering — markdown-rich text, theme-driven colour, Music Mode that voices replies in a constructed OM-harmonic language with grammar particles. |
+| **H** | **Haptic** | Rose-amulet push-to-talk, particle-bloom anticipation on long-press, edge-glow feedback. Touch is the primary input. |
+| **A** | **Adaptive** | Skill suggester learns repeated tool chains; context-budget guard summarises history; plan executor decomposes long tasks. Grows around how you use it. |
+| **R** | **Resonant** | Brand mark (geometric rose) breathes with your HR via Health Connect. Live Wallpaper + Watch Face + in-app amulet share the same pulse. |
+| **A** | **Assistant** | One app, not a fragmented dashboard. Sideload it; everything else is configuration. |
 
 ## Tour
 

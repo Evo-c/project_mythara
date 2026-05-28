@@ -1,4 +1,6 @@
-# Mythara
+# Project M.Y.T.H.A.R.A
+
+> **M**ind **Y**oked **T**onal **H**aptic **A**daptive **R**esonant **A**ssistant
 
 > An open-source, local-first, fully-private **agentic AI mobile OS layer** for Android — an alternative to Google's "Android is now an intelligence system" pitch and the always-on cloud-Gemini posture of Android 17.
 
@@ -12,7 +14,17 @@
 
 ---
 
-## What Mythara is
+## What M.Y.T.H.A.R.A is
+
+**M**ind **Y**oked **T**onal **H**aptic **A**daptive **R**esonant **A**ssistant — Mythara for short. Every letter is a design constraint baked into the runtime:
+
+- **M — Mind Yoked**: the agent works on YOUR mental model, not a vendor's flattened persona. Local Big Five + values + preferences + relationship graph, all derived from your real conversations.
+- **Y — yoke**: the agent is harnessed to your phone via 65+ tools — calls, SMS, WhatsApp, calendar, alarms, shell, Termux, file I/O, face recognition. It can perceive, decide, and act through hardware you own.
+- **T — Tonal**: the assistant communicates with tone-aware rendering — markdown-rich text, theme-driven colour, Music Mode that voices replies in a constructed OM-harmonic language with grammar particles.
+- **H — Haptic**: rose-amulet push-to-talk, particle-bloom anticipation on long-press, edge-glow feedback. Touch is the primary input.
+- **A — Adaptive**: skill suggester learns your repeated tool chains, context-budget guard summarises history, plan executor decomposes long tasks. The runtime grows around how you actually use it.
+- **R — Resonant**: the brand mark (geometric rose) breathes with your HR via Health Connect. Live Wallpaper, Watch Face, and the in-app amulet share the same pulse.
+- **A — Assistant**: the surface is one app, not a fragmented dashboard. Sideload it; everything else is configuration.
 
 Mythara is a phone OS layer **you sideload as one app**, written in Kotlin + Jetpack Compose, that runs an **agentic AI** entirely under your control:
 
