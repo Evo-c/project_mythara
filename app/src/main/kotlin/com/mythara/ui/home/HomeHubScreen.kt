@@ -13,6 +13,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -329,6 +330,17 @@ fun HomeHubScreen(
                 contentAlignment = Alignment.Center,
             ) {
                 FaceMesh(speaking = speaking, pose = pose, modifier = Modifier.fillMaxSize())
+                // ShapeToneRow — the ♪ tone chip + an auto-fading flash
+                // message that surfaces a calm observation about the
+                // user (generated from the current LivingShape state +
+                // recent history). Display-only — never spoken aloud.
+                // Sits at the bottom of the face box so it's close to
+                // the shape it describes.
+                ShapeToneRow(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 18.dp),
+                )
             }
 
             // Bottom band reserved for the persistent rose amulet
@@ -558,4 +570,108 @@ private fun CaptionRow(glyph: String, glyphColor: Color, speaker: String, text: 
             maxLines = 4,
         )
     }
+}
+
+/**
+ * The ♪ tone chip + flash-message overlay on Home.
+ *
+ * Tap the ♪ chip → Mythara plays a short frequency sequence derived
+ * from the current shape's family + mood (via
+ * [com.mythara.face.ShapeToneSynthesizer]) AND surfaces a calm
+ * one-line observation about the user — generated from the live
+ * [com.mythara.face.LivingShapeEngine] state + recent
+ * [com.mythara.face.MoodHistoryStore] data.
+ *
+ * The observation **flashes for ~5 seconds and dismisses itself** —
+ * it is DISPLAY-ONLY (never spoken via TTS). Mythara is reflecting
+ * back to you in writing, gently.
+ */
+@Composable
+private fun ShapeToneRow(modifier: Modifier = Modifier) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val entry = remember {
+        dagger.hilt.android.EntryPointAccessors.fromApplication(
+            ctx.applicationContext,
+            HomeHubShapeToneEntryPoint::class.java,
+        )
+    }
+    val livingShapeEngine = remember { entry.livingShapeEngine() }
+    val toneSynth = remember { entry.shapeToneSynthesizer() }
+    val observation = remember { entry.shapeObservation() }
+
+    val living by livingShapeEngine.state.collectAsState()
+    var flash by remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        // Flash message — fades in 0.4 s, holds ~4 s, fades out 0.8 s.
+        // Always rendered as AnimatedVisibility so dismissal can
+        // animate cleanly even after the trigger has been cleared.
+        AnimatedVisibility(
+            visible = flash != null,
+            enter = fadeIn(tween(400)),
+            exit = fadeOut(tween(800)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .padding(bottom = 12.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MytharaColors.Surface.copy(alpha = 0.85f))
+                    .border(1.dp, MytharaColors.Charple.copy(alpha = 0.30f), RoundedCornerShape(14.dp))
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    text = flash ?: "",
+                    color = MytharaColors.FgMute,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                    ),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            }
+        }
+        // ♪ tone chip — small, brand accent, taps trigger tone + flash.
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(20.dp))
+                .background(MytharaColors.Charple.copy(alpha = 0.20f))
+                .border(1.dp, MytharaColors.Charple.copy(alpha = 0.50f), RoundedCornerShape(20.dp))
+                .clickable {
+                    // Fire and forget — both calls are cheap; the
+                    // tone synth queues into MusicToneEngine which
+                    // cancels any in-flight tone.
+                    toneSynth.play(living)
+                    scope.launch {
+                        val msg = runCatching { observation.generate(living) }
+                            .getOrDefault("this shape is yours.")
+                        flash = msg
+                        // Total visible time: 0.4 fade-in + 4 hold +
+                        // 0.8 fade-out = ~5.2 s. After dismiss the
+                        // AnimatedVisibility's exit handles the fade.
+                        kotlinx.coroutines.delay(4_400L)
+                        flash = null
+                    }
+                }
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+        ) {
+            Text(
+                text = "♪",
+                color = MytharaColors.Charple,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+            )
+        }
+    }
+}
+
+/** Hilt entry-point so [ShapeToneRow] can pull the LivingShapeEngine
+ *  + ShapeToneSynthesizer + ShapeObservation singletons. */
+@dagger.hilt.EntryPoint
+@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+internal interface HomeHubShapeToneEntryPoint {
+    fun livingShapeEngine(): com.mythara.face.LivingShapeEngine
+    fun shapeToneSynthesizer(): com.mythara.face.ShapeToneSynthesizer
+    fun shapeObservation(): com.mythara.face.ShapeObservation
 }
