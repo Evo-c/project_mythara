@@ -46,12 +46,15 @@ import androidx.lifecycle.viewModelScope
 import com.mythara.launcher.InstalledAppsProvider
 import com.mythara.ui.theme.MytharaColors
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import kotlin.math.abs
 import kotlin.math.exp
@@ -72,15 +75,26 @@ class AppDockViewModel @Inject constructor(
         viewModelScope.launch {
             val list = provider.list()
             _apps.value = list
-            // Decode icons in parallel-ish (sequential but on IO); the
-            // dock renders fallback initials while decoding.
+            // Decode icons in PARALLEL so the dock fills in fast
+            // instead of waiting on sequential PackageManager calls.
+            // Each async fans out on Dispatchers.IO; we accumulate
+            // results into a mutex-guarded map and snapshot the
+            // StateFlow as each icon arrives → the UI updates
+            // progressively rather than after the whole batch.
+            val mutex = kotlinx.coroutines.sync.Mutex()
             val map = LinkedHashMap<String, ImageBitmap>(list.size)
-            for (a in list) {
-                provider.iconBitmap(a.packageName, sizePx = 144)?.let { bm ->
-                    map[a.packageName] = bm
+            val jobs = list.map { app ->
+                async(kotlinx.coroutines.Dispatchers.IO) {
+                    val bm = provider.iconBitmap(app.packageName, sizePx = 144)
+                    if (bm != null) {
+                        mutex.withLock {
+                            map[app.packageName] = bm
+                            _icons.value = map.toMap()
+                        }
+                    }
                 }
             }
-            _icons.value = map
+            jobs.awaitAll()
         }
     }
 
