@@ -732,6 +732,22 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /** Pick a foreground colour that stays legible on the given
+     *  motif-coloured background. WCAG-style luminance check: if the
+     *  background's perceived luminance is ≥ 0.55 we render black,
+     *  else white. Used by the karaoke-highlight path so the active
+     *  word reads cleanly on any motif hue. */
+    private fun pickContrastingFg(argb: Int): androidx.compose.ui.graphics.Color {
+        val r = ((argb shr 16) and 0xFF) / 255.0
+        val g = ((argb shr 8) and 0xFF) / 255.0
+        val b = (argb and 0xFF) / 255.0
+        // Rec. 709 luminance — matches CSS / display behaviour better
+        // than naïve RGB average.
+        val luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return if (luma >= 0.55) androidx.compose.ui.graphics.Color.Black
+        else androidx.compose.ui.graphics.Color.White
+    }
+
     /** Build the coloured AnnotatedString for a Music-Mode reply
      *  bubble. Each word that has a motif gets its own colour (the
      *  circular mean of its OM-harmonic note hues); stopwords and
@@ -761,9 +777,22 @@ class ChatViewModel @Inject constructor(
                         val isHighlighted = (motifSeen == highlightMotifIndex)
                         motifSeen++
                         val style = if (isHighlighted) {
+                            // v7 P7+ — the prior 0.32-alpha tint
+                            // disappeared on the Spatial Cards
+                            // (light-lavender) bubble background
+                            // after the theme engine landed.
+                            // Render the active word as a solid
+                            // motif-coloured block instead, with an
+                            // auto-contrast foreground so the word
+                            // is legible whether the motif hue is
+                            // bright or dark. This is the "karaoke"
+                            // highlight — readable on every skin.
+                            val bg = androidx.compose.ui.graphics.Color(argb)
+                            val fg = pickContrastingFg(argb)
                             SpanStyle(
-                                color = androidx.compose.ui.graphics.Color(argb),
-                                background = androidx.compose.ui.graphics.Color(argb).copy(alpha = 0.32f),
+                                color = fg,
+                                background = bg.copy(alpha = 0.92f),
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                             )
                         } else {
                             SpanStyle(color = androidx.compose.ui.graphics.Color(argb))

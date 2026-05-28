@@ -83,6 +83,13 @@ class MusicVocabularyViewModel @Inject constructor(
         // this screen alone and won't notice.
         toneEngine.play(listOf(motif), sourceKey = token)
     }
+
+    /** Preview a single OM-harmonic pitch in isolation. Used by the
+     *  glossary's grammar-particle + suffix rows so the user can
+     *  tap a category and immediately hear the marker tone. */
+    fun playPitch(hz: Float) {
+        toneEngine.play(listOf(Motif(notes = listOf(hz))), sourceKey = "")
+    }
 }
 
 @Composable
@@ -133,13 +140,31 @@ fun MusicVocabularyScreen(
         )
         Spacer(Modifier.height(8.dp))
 
-        if (sorted.isEmpty()) {
-            EmptyState()
-        } else {
-            LazyColumn(
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
+        LazyColumn(
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            // ─── Glossary header — teach the language at a glance.
+            //     Three small reference cards: pitch ↔ colour,
+            //     vowel ↔ pitch, grammar particles + suffix system.
+            //     User can collapse mentally once they've learnt the
+            //     pattern; renders cheap on every screen visit.
+            item("glossary") { GlossaryCard() }
+            item("particles") { ParticleCard(playPitch = { vm.playPitch(it) }) }
+            item("suffixes") { SuffixCard(playPitch = { vm.playPitch(it) }) }
+
+            if (sorted.isEmpty()) {
+                item("empty") { EmptyState() }
+            } else {
+                item("lex-header") {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "${Glyph.DiamondOutline} your lexicon — content words mythara has minted",
+                        color = MytharaColors.Charple,
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                    )
+                }
                 items(items = sorted, key = { it.key }) { entry ->
                     VocabRow(token = entry.key, motif = entry.value) {
                         vm.viewModelScope.launch { vm.playMotif(entry.key, entry.value) }
@@ -147,6 +172,198 @@ fun MusicVocabularyScreen(
                 }
             }
         }
+    }
+}
+
+/** Pitch → colour reference card — the foundation of the language.
+ *  Each OM harmonic gets one row with its swatch + pitch + emotive
+ *  label so the user can decode "this colour = this sound" at a
+ *  glance, without having to play every word in the lexicon. */
+@Composable
+private fun GlossaryCard() {
+    val rows = listOf(
+        Triple(MusicVocabulary.OM_HARMONICS[0], "OM fundamental ॐ — deep, grounding", "/o/"),
+        Triple(MusicVocabulary.OM_HARMONICS[1], "octave above OM — warm body", "—"),
+        Triple(MusicVocabulary.OM_HARMONICS[2], "perfect 5th — resonant centre", "/a/"),
+        Triple(MusicVocabulary.OM_HARMONICS[3], "two octaves — warm forward", "/u/"),
+        Triple(MusicVocabulary.OM_HARMONICS[4], "major 3rd above — bright open", "/e/"),
+        Triple(MusicVocabulary.OM_HARMONICS[5], "5th above — clear edge", "—"),
+        Triple(MusicVocabulary.OM_HARMONICS[6], "minor 7th — edge-bright", "/y/"),
+        Triple(MusicVocabulary.OM_HARMONICS[7], "three octaves — piercing top", "/i/"),
+        Triple(MusicVocabulary.OM_HARMONICS[8], "major 2nd above — sparkle", "—"),
+    )
+    GlossarySection(
+        title = "${Glyph.DiamondFilled} pitch ↔ colour ↔ vowel — the language alphabet",
+    ) {
+        for ((hz, label, vowel) in rows) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NoteDot(Color(MusicColors.colorForNote(hz)))
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = "${hz.toInt()} Hz",
+                    color = MytharaColors.Fg,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.width(80.dp),
+                )
+                Text(
+                    text = vowel,
+                    color = MytharaColors.Mustard,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.width(36.dp),
+                )
+                Text(
+                    text = label,
+                    color = MytharaColors.FgDim,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+/** Grammatical particle card — every function word category and
+ *  the pitch its single-note motif rides on. Tap a category to
+ *  hear its particle tone in isolation. */
+@Composable
+private fun ParticleCard(playPitch: (Float) -> Unit) {
+    GlossarySection(
+        title = "${Glyph.DiamondFilled} grammar particles — function words ride one constant tone",
+    ) {
+        Text(
+            text = "every function word category gets one pitch. learn the category, hear the syntax.",
+            color = MytharaColors.FgDim,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
+        for (p in com.mythara.music.MusicGrammar.Particle.entries) {
+            val examples = com.mythara.music.MusicGrammar.FUNCTION_WORDS
+                .entries
+                .asSequence()
+                .filter { it.value == p }
+                .map { it.key }
+                .take(4)
+                .toList()
+                .joinToString(" · ")
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { playPitch(p.hz) }
+                    .padding(vertical = 5.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NoteDot(Color(MusicColors.colorForNote(p.hz)))
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "${p.label}  ·  ${p.hz.toInt()} Hz",
+                        color = MytharaColors.Fg,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    if (examples.isNotEmpty()) {
+                        Text(
+                            text = examples,
+                            color = MytharaColors.FgDim,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+                Text(
+                    text = "▶",
+                    color = MytharaColors.Bok,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+/** Suffix card — the morphology markers that turn `walk` into
+ *  `walking` / `walked` / `walks` audibly. Tap any row to preview
+ *  the marker tone in isolation. */
+@Composable
+private fun SuffixCard(playPitch: (Float) -> Unit) {
+    val labels = mapOf(
+        "ing" to "continuous · ongoing",
+        "ed" to "past · settled",
+        "s" to "plural · sharp",
+        "es" to "plural · sharp",
+        "ly" to "adverbial · edge",
+        "tion" to "nominalisation · warm",
+        "sion" to "nominalisation · warm",
+        "er" to "comparative / agent",
+        "est" to "superlative · topmost",
+        "ment" to "abstract noun",
+        "ness" to "quality noun",
+        "less" to "privative",
+        "ful" to "augmentative",
+    )
+    GlossarySection(
+        title = "${Glyph.DiamondFilled} morphology — endings append one extra tone",
+    ) {
+        Text(
+            text = "`walking` = motif(walk) + ing-tone · `dogs` = motif(dog) + plural-tone. " +
+                "tense + plurality become audible without inflating the dictionary.",
+            color = MytharaColors.FgDim,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
+        for ((suffix, pitch) in com.mythara.music.MusicGrammar.SUFFIXES) {
+            val gloss = labels[suffix] ?: ""
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable { playPitch(pitch) }
+                    .padding(vertical = 5.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NoteDot(Color(MusicColors.colorForNote(pitch)))
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = "-$suffix",
+                    color = MytharaColors.Fg,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.width(64.dp),
+                )
+                Text(
+                    text = gloss,
+                    color = MytharaColors.FgDim,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "▶",
+                    color = MytharaColors.Bok,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GlossarySection(title: String, content: @Composable () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MytharaColors.Surface)
+            .border(1.dp, MytharaColors.SurfaceHigh, RoundedCornerShape(10.dp))
+            .padding(14.dp),
+    ) {
+        Text(
+            text = title,
+            color = MytharaColors.Charple,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+        content()
     }
 }
 

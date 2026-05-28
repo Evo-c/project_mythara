@@ -930,12 +930,19 @@ private fun produceMusicAnnotated(text: String, defaultColor: androidx.compose.u
     val vm: ChatViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     val nowPlaying by vm.musicNowPlaying.collectAsState()
     val highlight = nowPlaying?.takeIf { it.sourceKey == text }?.motifIndex
+    // Re-key on defaultColor (bodyColor) so a theme switch (which
+    // changes the palette's foreground / background) re-runs the
+    // encoder. Without this key, the stale AnnotatedString from the
+    // previous theme keeps rendering and the karaoke highlight
+    // appears invisible against the new bubble background.
+    val defaultArgb = defaultColor.toArgb()
     val state = androidx.compose.runtime.produceState<androidx.compose.ui.text.AnnotatedString?>(
         initialValue = null,
         text,
         highlight,
+        defaultArgb,
     ) {
-        value = vm.composeMusicAnnotated(text, defaultColor.toArgb(), highlightMotifIndex = highlight)
+        value = vm.composeMusicAnnotated(text, defaultArgb, highlightMotifIndex = highlight)
     }
     return state.value
 }
