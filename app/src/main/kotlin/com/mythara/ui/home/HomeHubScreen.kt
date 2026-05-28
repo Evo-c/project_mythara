@@ -285,12 +285,17 @@ fun HomeHubScreen(
             )
 
             // Key notifications strip — top app chips, tap → open
-            // source app. Hidden when empty.
+            // source app. Hidden when empty. Activity context here
+            // (LocalContext.current) so PendingIntent.send() lands
+            // on the BAL allowlist for foreground launches; the VM's
+            // @ApplicationContext would trip the BAL block on 14+.
             if (notifications.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 NotificationsStrip(
                     items = notifications,
-                    onOpen = { vm.openNotification(it.recent) },
+                    onOpen = { item ->
+                        com.mythara.services.openNotificationSource(ctx, item.recent)
+                    },
                 )
             }
 

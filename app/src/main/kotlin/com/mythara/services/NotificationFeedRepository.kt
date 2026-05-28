@@ -49,17 +49,66 @@ class NotificationFeedRepository @Inject constructor() {
 fun openNotificationSource(ctx: Context, recent: NotificationListener.Recent): Boolean {
     // 1. Prefer the captured contentIntent — lands on the exact
     //    activity the notification points to (a specific WhatsApp
-    //    chat, a calendar event, etc).
+    //    chat, a calendar event, etc). Use the (ctx, code, intent)
+    //    overload so we can inject FLAG_ACTIVITY_NEW_TASK — required
+    //    when launching from a non-Activity context (which is what
+    //    we're in: Application context from the VM). Without the
+    //    flag, send() succeeds API-wise but the target activity
+    //    never appears.
     recent.contentIntent?.let { pi ->
-        val ok = runCatching { pi.send() }.isSuccess
-        if (ok) return true
-        Log.w("Mythara/NotifFeed", "contentIntent.send failed for ${recent.packageName}")
+        val fillIn = Intent().apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP,
+            )
+        }
+        // Android 14+ enforces Background-Activity-Launch (BAL):
+        // even when we (the sender) are foreground, the PendingIntent
+        // creator must explicitly grant BAL — most apps don't. The
+        // NotificationManager grants a 30 s allowlist on post, but
+        // once that expires (or for older entries replayed from our
+        // buffer), pi.send() lands as BAL_BLOCK and silently fails.
+        //
+        // ActivityOptions.setPendingIntentBackgroundActivityStartMode
+        // (MODE_BACKGROUND_ACTIVITY_START_ALLOWED) is the documented
+        // escape hatch: WE (the foreground sender) explicitly grant
+        // BAL for this single firing. Available since API 34.
+        val opts = runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                android.app.ActivityOptions.makeBasic()
+                    .setPendingIntentBackgroundActivityStartMode(
+                        android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
+                    )
+                    .toBundle()
+            } else null
+        }.getOrNull()
+        val sent = runCatching {
+            // 7-arg overload: (context, requestCode, intent, onFinished,
+            // handler, requiredPermission, options). Only the last
+            // matters for BAL — keep the rest null/default.
+            pi.send(ctx, 0, fillIn, null, null, null, opts)
+        }
+        if (sent.isSuccess) {
+            Log.d("Mythara/NotifFeed", "contentIntent.send ok for ${recent.packageName}")
+            return true
+        }
+        Log.w(
+            "Mythara/NotifFeed",
+            "contentIntent.send failed for ${recent.packageName}: ${sent.exceptionOrNull()?.message}",
+        )
     }
     // 2. Fallback: launch the app's main activity.
     val launch = runCatching { ctx.packageManager.getLaunchIntentForPackage(recent.packageName) }
-        .getOrNull() ?: return false
+        .getOrNull() ?: run {
+            Log.w("Mythara/NotifFeed", "no launch intent for ${recent.packageName}")
+            return false
+        }
     return runCatching {
         ctx.startActivity(launch.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+        Log.d("Mythara/NotifFeed", "fallback launch ok for ${recent.packageName}")
         true
+    }.onFailure {
+        Log.w("Mythara/NotifFeed", "fallback launch failed for ${recent.packageName}: ${it.message}")
     }.getOrDefault(false)
 }

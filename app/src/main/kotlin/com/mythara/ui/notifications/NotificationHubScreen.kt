@@ -142,6 +142,11 @@ fun NotificationHubScreen(
     var tab by remember { mutableStateOf(HubTab.Live) }
     val groups by vm.groups.collectAsState()
     val enabled by vm.listenerEnabled.collectAsState()
+    // ACTIVITY context, not Application — required to defeat
+    // Android 14+ BAL restrictions when calling PendingIntent.send
+    // for the source-app launch. The VM's @ApplicationContext is
+    // fine for everything else but loses the BAL allowlist.
+    val activityCtx = androidx.compose.ui.platform.LocalContext.current
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Tab switcher.
@@ -176,7 +181,12 @@ fun NotificationHubScreen(
                                 onDismiss = { vm.dismiss(it) },
                                 onToggleImportant = { vm.toggleImportant(g.packageName, g.important) },
                                 onAsk = { r -> vm.askMythara(r); onAskNavigateChat() },
-                                onOpen = { r -> vm.openSource(r) },
+                                // Launch from Activity context so the
+                                // Background-Activity-Launch gate
+                                // grants this app's foreground token.
+                                onOpen = { r ->
+                                    com.mythara.services.openNotificationSource(activityCtx, r)
+                                },
                             )
                         }
                     }
@@ -244,30 +254,48 @@ private fun GroupCard(
         }
         Spacer(Modifier.height(6.dp))
         group.items.take(4).forEach { r ->
-            // Tap the body title/text to open the source app; the
-            // explicit action chips below are bigger, padded
-            // tap-targets for the same + dismiss + ask.
+            // Tap-anywhere card: the whole body row dispatches
+            // onOpen(r); the action chips below are explicit
+            // tap-targets for open/dismiss/ask. A trailing `→`
+            // chevron makes the affordance visible — the user
+            // shouldn't have to guess the row is tappable.
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 4.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .clickable { onOpen(r) }
-                    .padding(vertical = 4.dp),
+                    .padding(vertical = 4.dp, horizontal = 4.dp),
             ) {
-                r.title?.takeIf { it.isNotBlank() }?.let {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        r.title?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                color = MytharaColors.Fg,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                            )
+                        }
+                        r.text?.takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                text = it,
+                                color = MytharaColors.FgMute,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 3,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(1.dp))
+                    // Open-source chevron — visible tap affordance.
                     Text(
-                        text = it,
-                        color = MytharaColors.Fg,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                    )
-                }
-                r.text?.takeIf { it.isNotBlank() }?.let {
-                    Text(
-                        text = it,
-                        color = MytharaColors.FgMute,
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 3,
+                        text = Glyph.Arrow,
+                        color = MytharaColors.Malibu,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        modifier = Modifier.padding(start = 8.dp, end = 4.dp),
                     )
                 }
                 Spacer(Modifier.height(8.dp))
