@@ -194,16 +194,48 @@ fun FaceMesh(
         }
     }
 
-    // Assembly 0 (scattered) → 1 (formed). Springs in on face-detect
-    // so the particles "suddenly" rush to centre with a little life.
+    // Assembly 0 (scattered) → 1 (formed). v7 P7+: was a snappy
+    // spring (dampingRatio=0.62, stiffness=190) — particles
+    // appeared to teleport into the ring. The user asked for a
+    // slow, smooth gathering so the formation reads as deliberate.
+    // Asymmetric easing: ~1.8 s to gather (FastOutSlowInEasing —
+    // accelerate, then settle), ~0.8 s to disperse (snappier so
+    // looking away feels responsive). Drives the `ease` field in
+    // the Canvas below where every particle's final position is
+    // sxN + (txN - sxN) * ease.
     val assembly by animateFloatAsState(
         targetValue = if (pose.present) 1f else 0f,
-        animationSpec = androidx.compose.animation.core.spring(
-            dampingRatio = 0.62f,
-            stiffness = 190f,
-        ),
+        animationSpec = if (pose.present) {
+            tween(
+                durationMillis = 1800,
+                easing = androidx.compose.animation.core.FastOutSlowInEasing,
+            )
+        } else {
+            tween(
+                durationMillis = 800,
+                easing = androidx.compose.animation.core.LinearOutSlowInEasing,
+            )
+        },
         label = "assembly",
     )
+
+    // Gather phase — drives a short "drift toward centre" pre-pass
+    // before particles snap onto their final ring / sphere
+    // positions. The Canvas blends each particle's scatter point
+    // first toward CIRCLE_CX/CY (gather), then onto its assembled
+    // target (form). Curve: rises fast to ~0.55 (particles converge
+    // toward middle), then dips back to 0 as `assembly` itself
+    // finishes settling onto the ring. Net effect: "dust drifts
+    // inward → coalesces into the ring", not "dust teleports".
+    val gather = remember(assembly) {
+        // 0 → 1.5 region maps to: rapid rise from 0 to ~0.55, then
+        // tapering back to 0. Implemented inline so it never lags
+        // the assembly state.
+        val a = assembly.coerceIn(0f, 1f)
+        // Triangular pulse: peaks at a=0.5, zero at 0 and 1.
+        val peak = 0.55f
+        (1f - kotlin.math.abs(a - 0.5f) * 2f).coerceIn(0f, 1f) * peak
+    }
 
     // Idle self-blink when no camera face; real eye-open when tracking.
     val idleBlink = remember { Animatable(1f) }
@@ -320,11 +352,25 @@ fun FaceMesh(
 
             // Both roles blend scatter → assembled by `ease`. For HALO,
             // txN == sxN (no assembled target) so this is a no-op. For
-            // CIRCLE, ease=0 (no face) → particles scatter and drift;
-            // ease=1 (face detected) → particles form the ring (or the
-            // sunburst, when also speaking).
-            val nx = sxN + (txN - sxN) * ease
-            val ny = syN + (tyN - syN) * ease
+            // CIRCLE / SPHERE, ease=0 (no face) → particles scatter and
+            // drift; ease=1 (face detected) → particles form the ring
+            // (or the sunburst, when also speaking).
+            //
+            // GATHER pre-pass — pull each particle a small amount
+            // toward the centre while the assembly anim is mid-flight.
+            // `gather` peaks at 0.55 when assembly ≈ 0.5, falls back
+            // to 0 at the ends. So the visible motion reads as:
+            //   1) particles all drift inward toward CIRCLE_CX/CY
+            //   2) they coalesce, then push outward onto the ring
+            // instead of teleporting in a single straight line.
+            // HALO ignored (its `txN==sxN` so the lerp below is a
+            // no-op for it; only CIRCLE/SPHERE see the pull).
+            val scatterPullX = if (p.role == PRole.HALO) sxN
+                else sxN + (CIRCLE_CX - sxN) * gather
+            val scatterPullY = if (p.role == PRole.HALO) syN
+                else syN + (CIRCLE_CY - syN) * gather
+            val nx = scatterPullX + (txN - scatterPullX) * ease
+            val ny = scatterPullY + (tyN - scatterPullY) * ease
             val cx = nx * w
             val cy = ny * h
 
