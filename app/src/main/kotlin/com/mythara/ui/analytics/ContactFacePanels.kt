@@ -43,7 +43,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.mythara.analytics.ContactProfileRow
+import com.mythara.face.ContactFaceEmbedding
+import com.mythara.lifeline.LifelineEntity
 import com.mythara.ui.theme.Glyph
 import com.mythara.ui.theme.MytharaColors
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +52,22 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/**
+ * Snapshot of the most recent face-sample add for a contact. Lifted
+ * from PeopleViewModel so the new [com.mythara.ui.people.ContactDetailScreen]
+ * can drive [FaceSamplesPanel] without depending on the analytics VM.
+ *
+ * Both ViewModels (PeopleViewModel + ContactDetailViewModel) own
+ * their own StateFlow<SampleStatus?>; the panel just renders what it
+ * receives.
+ */
+data class SampleStatus(
+    val nameKey: String,
+    val message: String,
+    val isError: Boolean = false,
+    val inFlight: Boolean = false,
+)
 
 /**
  * Face-recognition basis panel for the contact-detail screen.
@@ -61,39 +78,35 @@ import java.util.Locale
  * thumbnails; each has an inline × to remove it. "Add samples"
  * opens the system multi-photo picker.
  *
- * After samples are added [PeopleViewModel.addFaceSamples] also
- * kicks a retroactive rescan of recent lifeline photos that don't
- * yet have this contact tagged — so the user immediately sees
- * existing photos back-fill into the [PhotosOfContactPanel] below.
+ * v7 P7+ refactor: the panel no longer depends on PeopleViewModel —
+ * callers pass the flows + callbacks directly so the new
+ * ContactDetailScreen can reuse the exact same UI.
  */
 @Composable
 internal fun FaceSamplesPanel(
-    profile: ContactProfileRow,
-    vm: PeopleViewModel,
+    displayName: String,
+    nameKey: String,
+    samples: List<ContactFaceEmbedding>,
+    status: SampleStatus?,
+    modelReady: Boolean,
+    backendLabel: String,
+    onInstallModel: () -> Unit,
+    onAddSamples: (List<Uri>) -> Unit,
+    onRemoveSample: (String) -> Unit,
+    onClearStaleStatus: () -> Unit,
 ) {
-    val samplesFlow = remember(profile.nameKey) { vm.observeFaceSamplesFor(profile.nameKey) }
-    val samples by samplesFlow.collectAsState(initial = emptyList())
-    val status by vm.sampleStatus.collectAsState()
-
     // Clear stale status when the user opens a different contact.
-    LaunchedEffect(profile.nameKey) {
-        if (status?.nameKey != null && status?.nameKey != profile.nameKey) {
-            vm.clearSampleStatus()
+    LaunchedEffect(nameKey) {
+        if (status?.nameKey != null && status.nameKey != nameKey) {
+            onClearStaleStatus()
         }
     }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_SAMPLES_PER_BATCH),
     ) { uris ->
-        if (uris.isNotEmpty()) {
-            vm.addFaceSamples(profile.nameKey, uris)
-        }
+        if (uris.isNotEmpty()) onAddSamples(uris)
     }
-
-    // Re-check on every recomposition (cheap — just a file-exists
-    // call). When the user taps "install face model" this flips
-    // false → true once the download finishes, swapping the CTA.
-    val modelReady = vm.isFaceModelInstalled()
 
     Column(
         modifier = Modifier
@@ -111,7 +124,7 @@ internal fun FaceSamplesPanel(
                 modifier = Modifier.weight(1f),
             )
             if (!modelReady) {
-                TextButton(onClick = { vm.installFaceModel(profile.nameKey) }) {
+                TextButton(onClick = onInstallModel) {
                     Text(
                         text = "${Glyph.DiamondFilled} install face model",
                         color = MytharaColors.Bok,
@@ -140,7 +153,7 @@ internal fun FaceSamplesPanel(
                     "Tap 'install face model' once — it downloads in the background " +
                     "and unlocks face matching for every contact."
             } else {
-                "pick a few clear photos of ${profile.displayName}. Mythara learns " +
+                "pick a few clear photos of $displayName. Mythara learns " +
                     "their face from these — every future (and recent past) photo of " +
                     "them auto-tags into the grid below."
             },
@@ -166,13 +179,13 @@ internal fun FaceSamplesPanel(
                 for (s in samples) {
                     SampleThumb(
                         path = s.sourcePhotoPath,
-                        onRemove = { vm.removeFaceSample(s.sourcePhotoPath) },
+                        onRemove = { onRemoveSample(s.sourcePhotoPath) },
                     )
                 }
             }
         }
 
-        status?.takeIf { it.nameKey == profile.nameKey }?.let { st ->
+        status?.takeIf { it.nameKey == nameKey }?.let { st ->
             Spacer(Modifier.height(8.dp))
             Text(
                 text = st.message,
@@ -191,7 +204,7 @@ internal fun FaceSamplesPanel(
         if (modelReady) {
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "${Glyph.AccentBar} running on ${vm.faceBackendLabel()}",
+                text = "${Glyph.AccentBar} running on $backendLabel",
                 color = MytharaColors.FgMute,
                 style = MaterialTheme.typography.labelSmall,
             )
@@ -251,12 +264,10 @@ private fun SampleThumb(path: String, onRemove: () -> Unit) {
  */
 @Composable
 internal fun PhotosOfContactPanel(
-    profile: ContactProfileRow,
-    vm: PeopleViewModel,
+    displayName: String,
+    photos: List<LifelineEntity>,
 ) {
     val ctx = LocalContext.current
-    val flow = remember(profile.nameKey) { vm.observePhotosOf(profile.nameKey) }
-    val photos by flow.collectAsState(initial = emptyList())
 
     Column(
         modifier = Modifier
@@ -268,7 +279,7 @@ internal fun PhotosOfContactPanel(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "${Glyph.DiamondFilled} photos of ${profile.displayName}",
+                text = "${Glyph.DiamondFilled} photos of $displayName",
                 color = MytharaColors.Charple,
                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                 modifier = Modifier.weight(1f),
@@ -284,7 +295,7 @@ internal fun PhotosOfContactPanel(
         if (photos.isEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text(
-                text = "${Glyph.CircleOutline} no photos tagged with ${profile.displayName} yet. " +
+                text = "${Glyph.CircleOutline} no photos tagged with $displayName yet. " +
                     "add a few face samples above and existing photos will populate here as " +
                     "Mythara recognises them.",
                 color = MytharaColors.FgMute,

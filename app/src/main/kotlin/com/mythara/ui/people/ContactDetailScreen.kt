@@ -23,14 +23,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -71,10 +76,19 @@ class ContactDetailViewModel @Inject constructor(
     private val profiles: ContactProfileRepository,
     private val interactions: ContactInteractionRepository,
     private val systemContacts: SystemContactsRepository,
+    private val faceSampler: com.mythara.face.ContactFaceSampler,
+    private val contactFaceIndex: com.mythara.face.ContactFaceIndex,
+    private val lifelineRepo: com.mythara.lifeline.LifelineRepository,
 ) : ViewModel() {
 
     private val _data = MutableStateFlow<ContactDetailData?>(null)
     val data: StateFlow<ContactDetailData?> = _data.asStateFlow()
+
+    /** Status of the in-flight face-sample add for this contact. Same
+     *  shape PeopleViewModel uses — both render through
+     *  [com.mythara.ui.analytics.FaceSamplesPanel]. */
+    private val _sampleStatus = MutableStateFlow<com.mythara.ui.analytics.SampleStatus?>(null)
+    val sampleStatus: StateFlow<com.mythara.ui.analytics.SampleStatus?> = _sampleStatus.asStateFlow()
 
     fun load(nameKey: String) {
         viewModelScope.launch {
@@ -84,6 +98,95 @@ class ContactDetailViewModel @Inject constructor(
             }
             val inter = interactions.dao.listForContact(nameKey, limit = 100)
             _data.value = ContactDetailData(row = row, sys = sys, interactions = inter)
+        }
+    }
+
+    // ─── Face-recognition panel hooks ───────────────────────────────
+    // These mirror the PeopleViewModel surface so the same Composable
+    // panels render identically here.
+
+    fun observeFaceSamplesFor(nameKey: String) =
+        contactFaceIndex.dao.observeForContact(nameKey)
+
+    fun observePhotosOf(nameKey: String) =
+        lifelineRepo.dao.observeForContact(nameKey, limit = 60)
+
+    fun isFaceModelInstalled(): Boolean = faceSampler.modelInstalled()
+
+    fun faceBackendLabel(): String = faceSampler.backendLabel()
+
+    fun clearSampleStatus() { _sampleStatus.value = null }
+
+    fun addFaceSamples(nameKey: String, uris: List<android.net.Uri>) {
+        if (uris.isEmpty()) return
+        val needsModel = !faceSampler.modelInstalled()
+        val firstMsg = if (needsModel) {
+            "… downloading face model (~5MB), then processing ${uris.size} photo${if (uris.size == 1) "" else "s"}…"
+        } else {
+            "… processing ${uris.size} photo${if (uris.size == 1) "" else "s"}…"
+        }
+        _sampleStatus.value = com.mythara.ui.analytics.SampleStatus(
+            nameKey = nameKey, message = firstMsg, inFlight = true,
+        )
+        viewModelScope.launch {
+            val result = runCatching { faceSampler.addSamples(nameKey, uris) }
+                .getOrElse {
+                    _sampleStatus.value = com.mythara.ui.analytics.SampleStatus(
+                        nameKey, "× error: ${it.message}", isError = true,
+                    )
+                    return@launch
+                }
+            if (!result.embedderReady) {
+                val why = if (result.modelDownloadFailed) {
+                    "× couldn't download the face model — check connection and tap 'install face model'."
+                } else {
+                    "× face model not installed — tap 'install face model'."
+                }
+                _sampleStatus.value = com.mythara.ui.analytics.SampleStatus(
+                    nameKey, why, isError = true,
+                )
+                return@launch
+            }
+            val rescanCount = if (result.embeddingsAdded > 0) {
+                runCatching { faceSampler.retroactiveRescan(nameKey) }.getOrDefault(0)
+            } else 0
+            val msg = buildString {
+                if (result.modelDownloaded) append("✓ face model installed · ")
+                append("${if (result.modelDownloaded) "added" else "✓ added"} ${result.embeddingsAdded} face sample")
+                if (result.embeddingsAdded != 1) append("s")
+                append(" from ${result.urisProcessed} photo${if (result.urisProcessed == 1) "" else "s"}")
+                if (result.facesFound == 0 && result.urisProcessed > 0) {
+                    append(" · no faces detected in any photo")
+                }
+                if (rescanCount > 0) {
+                    append(" · rescanning $rescanCount existing photo${if (rescanCount == 1) "" else "s"}")
+                }
+            }
+            _sampleStatus.value = com.mythara.ui.analytics.SampleStatus(
+                nameKey, msg,
+                isError = result.embeddingsAdded == 0 && result.facesFound > 0,
+            )
+        }
+    }
+
+    fun installFaceModel(nameKey: String) {
+        _sampleStatus.value = com.mythara.ui.analytics.SampleStatus(
+            nameKey, "… downloading face model (~5MB)…", inFlight = true,
+        )
+        viewModelScope.launch {
+            val ok = runCatching { faceSampler.ensureModelInstalled() }.getOrDefault(false)
+            _sampleStatus.value = com.mythara.ui.analytics.SampleStatus(
+                nameKey,
+                if (ok) "✓ face model installed — you can add samples now."
+                else "× download failed — check your connection and try again.",
+                isError = !ok,
+            )
+        }
+    }
+
+    fun removeFaceSample(sourcePath: String) {
+        viewModelScope.launch {
+            runCatching { faceSampler.removeSample(sourcePath) }
         }
     }
 }
@@ -107,6 +210,9 @@ fun ContactDetailScreen(
     val displayName = data?.row?.displayName ?: data?.sys?.displayName ?: nameKey
     val phone = data?.sys?.primaryPhone ?: data?.row?.phone
     val hasWa = data?.sys?.hasWhatsApp == true
+    // v7+ — photo URI from system contact (content://) takes priority,
+    // then the app-side override on the Mythara profile row.
+    val photoUri = data?.sys?.photoUri ?: data?.row?.photoUri
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -117,6 +223,7 @@ fun ContactDetailScreen(
             HeaderCard(
                 displayName = displayName,
                 phone = phone,
+                photoUri = photoUri,
                 isFavorite = data?.row?.isFavorite == true,
                 hasWhatsApp = hasWa,
                 onCall = { phone?.let { ContactActions.phoneCall(ctx, it) } },
@@ -135,11 +242,12 @@ fun ContactDetailScreen(
             row.userNotes?.takeIf { it.isNotBlank() }?.let {
                 item("notes") { MemoryCard(title = "your notes", body = it) }
             }
-            if (row.bigFiveSampleSize > 0 &&
-                (row.openness != null || row.conscientiousness != null)
-            ) {
-                item("big5") { BigFiveCard(row = row) }
-            }
+            // Always render the Big Five card — even with 0 observed
+            // facts; the bars fade to grey and the disclaimer below
+            // tells the user Mythara is still learning. This way the
+            // dimension labels are always visible as a hint of what
+            // gets tracked.
+            item("big5") { BigFiveCard(row = row) }
             val notable = decodeStringList(row.notableTraitsJson)
             if (notable.isNotEmpty()) {
                 item("traits") { ChipsCard(title = "notable traits", chips = notable) }
@@ -147,6 +255,40 @@ fun ContactDetailScreen(
             val topics = decodeStringList(row.topTopicsJson)
             if (topics.isNotEmpty()) {
                 item("topics") { ChipsCard(title = "top topics", chips = topics) }
+            }
+        }
+        // ─── Faces — user-curated face samples + auto-tagged
+        //     photos. Available for every contact (system address-
+        //     book row OR Mythara profile row OR even a bare nameKey
+        //     with no analytics yet) since the user might want to
+        //     seed face recognition before any chat history exists.
+        val faceKey = data?.row?.nameKey ?: nameKey
+        val faceDisplay = displayName
+        if (data != null) {
+            item("faces") {
+                val samplesFlow = remember(faceKey) { vm.observeFaceSamplesFor(faceKey) }
+                val samples by samplesFlow.collectAsState(initial = emptyList())
+                val status by vm.sampleStatus.collectAsState()
+                com.mythara.ui.analytics.FaceSamplesPanel(
+                    displayName = faceDisplay,
+                    nameKey = faceKey,
+                    samples = samples,
+                    status = status,
+                    modelReady = vm.isFaceModelInstalled(),
+                    backendLabel = vm.faceBackendLabel(),
+                    onInstallModel = { vm.installFaceModel(faceKey) },
+                    onAddSamples = { uris -> vm.addFaceSamples(faceKey, uris) },
+                    onRemoveSample = { p -> vm.removeFaceSample(p) },
+                    onClearStaleStatus = { vm.clearSampleStatus() },
+                )
+            }
+            item("photos-of") {
+                val photosFlow = remember(faceKey) { vm.observePhotosOf(faceKey) }
+                val photos by photosFlow.collectAsState(initial = emptyList())
+                com.mythara.ui.analytics.PhotosOfContactPanel(
+                    displayName = faceDisplay,
+                    photos = photos,
+                )
             }
         }
         val inter = data?.interactions.orEmpty()
@@ -161,13 +303,14 @@ fun ContactDetailScreen(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = "no analytics yet for this contact",
+                        text = "no analytics yet for this contact — start chatting about them and Mythara will fill this page in",
                         color = MytharaColors.FgMute,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
             }
         }
+        item("end-pad") { Spacer(Modifier.height(40.dp)) }
     }
 }
 
@@ -177,6 +320,7 @@ fun ContactDetailScreen(
 private fun HeaderCard(
     displayName: String,
     phone: String?,
+    photoUri: String?,
     isFavorite: Boolean,
     hasWhatsApp: Boolean,
     onCall: () -> Unit,
@@ -193,7 +337,7 @@ private fun HeaderCard(
             .padding(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            BigAvatar(name = displayName)
+            BigAvatar(name = displayName, photoUri = photoUri)
             Spacer(Modifier.size(12.dp))
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -236,22 +380,55 @@ private fun HeaderCard(
 }
 
 @Composable
-private fun BigAvatar(name: String) {
-    val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+private fun BigAvatar(name: String, photoUri: String?) {
+    val photo = rememberContactPhoto(photoUri)
     Box(
         modifier = Modifier
-            .size(64.dp)
+            .size(72.dp)
             .clip(CircleShape)
             .background(MytharaColors.Charple.copy(alpha = 0.32f))
             .border(2.dp, MytharaColors.Charple.copy(alpha = 0.55f), CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = initial,
-            color = MytharaColors.Fg,
-            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-        )
+        if (photo != null) {
+            Image(
+                bitmap = photo,
+                contentDescription = name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().clip(CircleShape),
+            )
+        } else {
+            val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+            Text(
+                text = initial,
+                color = MytharaColors.Fg,
+                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+            )
+        }
     }
+}
+
+/**
+ * Resolve a contact-photo content URI (or any URI we can openInputStream
+ * on) into an [ImageBitmap]. Loads async on Dispatchers.IO; returns
+ * null while loading or on failure → caller falls back to the initial-
+ * letter avatar.
+ */
+@Composable
+private fun rememberContactPhoto(photoUri: String?): ImageBitmap? {
+    val ctx = LocalContext.current
+    return produceState<ImageBitmap?>(initialValue = null, key1 = photoUri) {
+        val uri = photoUri?.takeIf { it.isNotBlank() }
+        if (uri == null) { value = null; return@produceState }
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val parsed = android.net.Uri.parse(uri)
+                ctx.contentResolver.openInputStream(parsed)?.use { input ->
+                    android.graphics.BitmapFactory.decodeStream(input)?.asImageBitmap()
+                }
+            }.getOrNull()
+        }
+    }.value
 }
 
 @Composable
@@ -302,11 +479,26 @@ private fun StatRow(label: String, value: String) {
 @Composable
 private fun MemoryCard(title: String, body: String) {
     DetailCard(title = "◇ $title") {
-        Text(
-            text = body,
-            color = MytharaColors.Fg,
-            style = MaterialTheme.typography.bodyMedium,
-        )
+        // Split on blank lines so multi-paragraph relationship
+        // summaries breathe — single-line bodies render
+        // identically. Bumped line-height for readability of dense
+        // analytics text (line-height 1.45× the font size matches
+        // editorial typography defaults).
+        val paragraphs = remember(body) {
+            body.trim().split(Regex("\\n\\s*\\n")).map { it.trim() }.filter { it.isNotBlank() }
+        }
+        paragraphs.forEachIndexed { i, para ->
+            if (i > 0) Spacer(Modifier.height(8.dp))
+            Text(
+                text = para,
+                color = MytharaColors.Fg,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    lineHeight = androidx.compose.ui.unit.TextUnit(
+                        20f, androidx.compose.ui.unit.TextUnitType.Sp,
+                    ),
+                ),
+            )
+        }
     }
 }
 
@@ -318,9 +510,16 @@ private fun BigFiveCard(row: ContactProfileRow) {
         TraitBar("extraversion", row.extraversion, MytharaColors.Bok)
         TraitBar("agreeableness", row.agreeableness, MytharaColors.Mustard)
         TraitBar("neuroticism", row.neuroticism, MytharaColors.Sriracha)
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(6.dp))
+        val n = row.bigFiveSampleSize
+        val disclaimer = when {
+            n == 0 -> "no facts observed yet — talk more about this person and Mythara will start estimating"
+            n < 10 -> "estimated from $n facts — low confidence, keep chatting to sharpen"
+            n < 30 -> "estimated from $n facts — moderate confidence"
+            else -> "estimated from $n observed facts"
+        }
         Text(
-            text = "estimated from ${row.bigFiveSampleSize} observed facts — keep chatting to sharpen",
+            text = disclaimer,
             color = MytharaColors.FgDim,
             style = MaterialTheme.typography.labelSmall,
         )

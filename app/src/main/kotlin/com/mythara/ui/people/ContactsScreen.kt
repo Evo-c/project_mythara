@@ -24,13 +24,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -330,7 +336,7 @@ private fun ContactRow(c: MergedContact, onOpen: (nameKey: String) -> Unit) {
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Avatar(name = c.displayName)
+            Avatar(name = c.displayName, photoUri = c.photoUri)
             Spacer(Modifier.size(12.dp))
             Column(modifier = Modifier.fillMaxWidth().padding(end = 12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -379,8 +385,8 @@ private fun ContactRow(c: MergedContact, onOpen: (nameKey: String) -> Unit) {
 }
 
 @Composable
-private fun Avatar(name: String) {
-    val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+private fun Avatar(name: String, photoUri: String?) {
+    val photo = rememberContactListPhoto(photoUri)
     Box(
         modifier = Modifier
             .size(40.dp)
@@ -389,12 +395,43 @@ private fun Avatar(name: String) {
             .border(1.dp, MytharaColors.Charple.copy(alpha = 0.55f), CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = initial,
-            color = MytharaColors.Fg,
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-        )
+        if (photo != null) {
+            Image(
+                bitmap = photo,
+                contentDescription = name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().clip(CircleShape),
+            )
+        } else {
+            val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+            Text(
+                text = initial,
+                color = MytharaColors.Fg,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+            )
+        }
     }
+}
+
+/** Tiny per-row photo loader. Async on IO; nulls fall back to the
+ *  initial-letter avatar above. Doesn't cache across compositions —
+ *  for the contacts list (~hundreds of small rows) the cost is
+ *  acceptable and Android's ContentResolver memoises small photos. */
+@Composable
+private fun rememberContactListPhoto(photoUri: String?): ImageBitmap? {
+    val ctx = LocalContext.current
+    return produceState<ImageBitmap?>(initialValue = null, key1 = photoUri) {
+        val uri = photoUri?.takeIf { it.isNotBlank() }
+        if (uri == null) { value = null; return@produceState }
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val parsed = android.net.Uri.parse(uri)
+                ctx.contentResolver.openInputStream(parsed)?.use { input ->
+                    android.graphics.BitmapFactory.decodeStream(input)?.asImageBitmap()
+                }
+            }.getOrNull()
+        }
+    }.value
 }
 
 @Composable

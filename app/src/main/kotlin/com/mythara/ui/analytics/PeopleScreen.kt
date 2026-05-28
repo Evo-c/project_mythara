@@ -646,13 +646,12 @@ class PeopleViewModel @Inject constructor(
     // ─── Per-contact face-recognition samples ─────────────────────
 
     /** Status of the most recent face-sample add for the selected
-     *  contact. Cleared when the user opens a different profile. */
-    data class SampleStatus(
-        val nameKey: String,
-        val message: String,
-        val isError: Boolean = false,
-        val inFlight: Boolean = false,
-    )
+     *  contact. Cleared when the user opens a different profile.
+     *
+     *  v7 P7+ refactor: SampleStatus is now a top-level data class in
+     *  [com.mythara.ui.analytics.SampleStatus] so the new
+     *  ContactDetailScreen can reuse the same panel without depending
+     *  on this VM. */
     private val _sampleStatus = MutableStateFlow<SampleStatus?>(null)
     val sampleStatus: StateFlow<SampleStatus?> = _sampleStatus.asStateFlow()
 
@@ -1620,13 +1619,29 @@ private fun ProfileDetail(
         // kicks a retroactive rescan so existing lifeline photos
         // back-fill into the photos grid below.
         Spacer(Modifier.height(12.dp))
-        FaceSamplesPanel(profile = p, vm = vm)
+        val faceSamplesFlow = remember(p.nameKey) { vm.observeFaceSamplesFor(p.nameKey) }
+        val faceSamples by faceSamplesFlow.collectAsState(initial = emptyList())
+        val faceSampleStatus by vm.sampleStatus.collectAsState()
+        FaceSamplesPanel(
+            displayName = p.displayName,
+            nameKey = p.nameKey,
+            samples = faceSamples,
+            status = faceSampleStatus,
+            modelReady = vm.isFaceModelInstalled(),
+            backendLabel = vm.faceBackendLabel(),
+            onInstallModel = { vm.installFaceModel(p.nameKey) },
+            onAddSamples = { uris -> vm.addFaceSamples(p.nameKey, uris) },
+            onRemoveSample = { path -> vm.removeFaceSample(path) },
+            onClearStaleStatus = { vm.clearSampleStatus() },
+        )
 
         // Auto-detected photos of this contact — every lifeline
         // entry whose detected_contacts_json contains this nameKey.
         // Updates live as FaceAnalysisWorker tags new photos.
         Spacer(Modifier.height(12.dp))
-        PhotosOfContactPanel(profile = p, vm = vm)
+        val photosOfFlow = remember(p.nameKey) { vm.observePhotosOf(p.nameKey) }
+        val photosOf by photosOfFlow.collectAsState(initial = emptyList())
+        PhotosOfContactPanel(displayName = p.displayName, photos = photosOf)
 
         // Capability Expansion v3 phase 7 — recent interactions panel.
         // Aggregated from ContactInteractionDb which dual-writes from
