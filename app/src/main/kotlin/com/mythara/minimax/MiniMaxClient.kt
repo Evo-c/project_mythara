@@ -4,23 +4,16 @@ import kotlinx.serialization.json.Json
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.Response
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.util.concurrent.TimeUnit
 
 /**
- * Factory for MiniMax network clients. Two flavors:
- *  - [retrofit] — for the non-streaming `/models` validation call. Builds
- *    a fresh Retrofit each invocation because the base URL (region) and
- *    API key (Bearer header) are both user-mutable settings.
- *  - [okHttp]   — naked OkHttp client for SSE streaming. Same auth
- *    interceptor + `readTimeout(0)` so long generations don't get cut.
+ * Factory for Gemini OpenAI-compatible network clients.
  *
- * Both share a single [Json] configured for forgiving decoding — MiniMax
- * occasionally adds new fields ahead of docs; ignoring unknown keys keeps
- * us from breaking on a Tuesday.
+ * The class/package names stay MiniMaxClient/com.mythara.minimax so the rest of
+ * the app does not need import rewrites. Only the endpoint/auth behavior changes.
  */
 class MiniMaxClient(
     private val apiKey: String,
@@ -28,16 +21,20 @@ class MiniMaxClient(
 ) {
     private val authInterceptor = Interceptor { chain ->
         val req = chain.request().newBuilder()
-            .addHeader("Authorization", "Bearer $apiKey")
+            // Requested Gemini REST key header.
+            // Do not hardcode the key here; keep using SettingsStore/DataStore.
+            .addHeader("x-goog-api-key", apiKey)
             .addHeader("Content-Type", "application/json")
             .addHeader("Accept", "application/json")
             .build()
+
         chain.proceed(req)
     }
 
     private val logging = HttpLoggingInterceptor().apply {
-        // BODY would leak the API key into logcat; use BASIC for headers + method/path.
+        // BODY can leak prompts/responses into logcat. BASIC is safer.
         level = HttpLoggingInterceptor.Level.BASIC
+        redactHeader("x-goog-api-key")
         redactHeader("Authorization")
     }
 
@@ -46,10 +43,7 @@ class MiniMaxClient(
             .addInterceptor(authInterceptor)
             .addInterceptor(logging)
             .connectTimeout(20, TimeUnit.SECONDS)
-            // readTimeout(0) means "no read timeout" — required for SSE
-            // long streams. The Retrofit-driven /models call short-circuits
-            // because it gets a full response in one shot.
-            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS) // required for long SSE streams
             .writeTimeout(30, TimeUnit.SECONDS)
             .build()
     }
@@ -63,11 +57,6 @@ class MiniMaxClient(
             .create(MiniMaxApi::class.java)
     }
 
-    /**
-     * Suspends to round-trip `GET /models`. Returns `Result.success` on
-     * 2xx with at least one model in the response, `Result.failure` with
-     * a [ApiException] otherwise. Used by Settings → "Validate" button.
-     */
     suspend fun validateKey(): Result<List<String>> = runCatching {
         val res = retrofit.listModels()
         if (res.isSuccessful) {
@@ -79,14 +68,8 @@ class MiniMaxClient(
     }
 
     companion object {
-        /**
-         * Shared JSON config. The non-obvious choice is `encodeDefaults = true`
-         * so that default-valued fields (notably `Tool.type = "function"` and
-         * `stream = true`) are serialised on the wire. With encodeDefaults=false
-         * MiniMax received tools without a `type` field and rejected the
-         * request with `(2013) invalid tool type`. Null fields are still
-         * dropped via `explicitNulls = false`.
-         */
+        const val GEMINI_MODEL: String = "gemini-1.5-flash"
+
         val json: Json = Json {
             ignoreUnknownKeys = true
             encodeDefaults = true
@@ -96,6 +79,5 @@ class MiniMaxClient(
     }
 }
 
-/** Thrown by [MiniMaxClient] when the API returns a non-2xx response. */
 class ApiException(val mapped: ErrorMapper.Mapped) :
-    RuntimeException("MiniMax ${mapped.httpStatus} ${mapped.code ?: ""}: ${mapped.message}")
+    RuntimeException("Gemini ${mapped.httpStatus} ${mapped.code ?: ""}: ${mapped.message}")
