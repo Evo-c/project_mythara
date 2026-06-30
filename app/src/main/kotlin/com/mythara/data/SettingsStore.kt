@@ -261,22 +261,11 @@ class SettingsStore @Inject constructor(
          * default for an agentic runtime. Users who want faster/cheaper
          * can pick a highspeed or older variant in Settings.
          */
-        const val DEFAULT_MODEL: String = "MiniMax-M2.7"
+        const val DEFAULT_MODEL: String = "gemini-1.5-flash"
 
-        /**
-         * Models documented on /v1/chat/completions per the OpenAI-compat
-         * spec page (text-chat-openai.md). M1 and VL-01 aren't listed on
-         * this endpoint and are intentionally excluded.
-         */
-        val SUPPORTED_MODELS: List<String> = listOf(
-            "MiniMax-M2.7",
-            "MiniMax-M2.7-highspeed",
-            "MiniMax-M2.5",
-            "MiniMax-M2.5-highspeed",
-            "MiniMax-M2.1",
-            "MiniMax-M2.1-highspeed",
-        )
-
+val SUPPORTED_MODELS: List<String> = listOf(
+    "gemini-1.5-flash",
+)
         /**
          * Default ElevenLabs voice id — "Rachel", their long-standing
          * stock voice that's available on the free tier. Users can
