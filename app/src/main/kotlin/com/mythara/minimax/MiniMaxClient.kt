@@ -23,7 +23,7 @@ class MiniMaxClient(
         val req = chain.request().newBuilder()
             // Requested Gemini REST key header.
             // Do not hardcode the key here; keep using SettingsStore/DataStore.
-            .addHeader("x-goog-api-key", apiKey)
+            .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Content-Type", "application/json")
             .addHeader("Accept", "application/json")
             .build()
@@ -34,8 +34,8 @@ class MiniMaxClient(
     private val logging = HttpLoggingInterceptor().apply {
         // BODY can leak prompts/responses into logcat. BASIC is safer.
         level = HttpLoggingInterceptor.Level.BASIC
-        redactHeader("x-goog-api-key")
         redactHeader("Authorization")
+        redactHeader("x-goog-api-key")
     }
 
     val okHttp: OkHttpClient by lazy {
