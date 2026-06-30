@@ -21,18 +21,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Encrypted persistence for the user's MiniMax API key + chosen region +
- * model. Uses Jetpack DataStore (preferences flavour) plus Google Tink
- * AEAD with the wrapping key in the Android Keystore — the modern
- * replacement for the now-deprecated EncryptedSharedPreferences.
- *
- * - The API key is base64(AEAD-encrypted-with-Tink) stored under
- *   `apiKey.encrypted`. Tink's [AndroidKeysetManager] handles key
- *   generation, rotation, and Keystore-backed wrapping.
- * - Region and model are stored in plaintext — not sensitive, and
- *   needed pre-decryption to render Settings.
- * - The Tink keyset itself lives in `mythara_master_keyset` SharedPreferences,
- *   wrapped by an Android Keystore key with alias `mythara_master_key`.
+ * Encrypted persistence for the user's cloud API key + chosen endpoint +
+ * model. Uses Jetpack DataStore plus Google Tink AEAD with the wrapping
+ * key in the Android Keystore.
  */
 @Singleton
 class SettingsStore @Inject constructor(
@@ -41,36 +32,35 @@ class SettingsStore @Inject constructor(
     private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "mythara_settings")
 
     private val keyApiKeyEncrypted = stringPreferencesKey("apiKey.encrypted")
-    /** Captured MiniMax web-session cookies (encrypted JSON
-     *  `{token, groupId, expiresAtMs}`). Used by MiniMaxUsageClient
-     *  to authenticate against the same surface the platform web
-     *  dashboard uses, since Bearer auth gives a different scoped
-     *  view than the user's signed-in browser session. */
+
+    /**
+     * Legacy MiniMax web-session storage. Kept so existing call sites still compile.
+     */
     private val keyMiniMaxWebSessionEncrypted = stringPreferencesKey("miniMaxWebSession.encrypted")
-    private val keyRegion          = stringPreferencesKey("region")
-    private val keyModel           = stringPreferencesKey("model")
-    // Gemini Developer API key — optional secondary credential used
-    // exclusively for the take_photo vision route. When set, VisionService
-    // routes captured images through Gemini instead of MiniMax-VL-01.
-    // Lives in the same Tink-encrypted DataStore as the MiniMax key so
-    // it inherits the same Keystore-backed at-rest protection.
+
+    private val keyRegion = stringPreferencesKey("region")
+    private val keyModel = stringPreferencesKey("model")
+
+    /**
+     * Gemini Developer API key used by the optional take_photo vision route.
+     */
     private val keyGeminiKeyEncrypted = stringPreferencesKey("geminiKey.encrypted")
-    // ElevenLabs TTS: optional API key + toggle to route Tts.speak()
-    // through their hosted voice synthesis instead of Android's
-    // built-in TextToSpeech. Key is Tink-AEAD-encrypted like the
-    // other API keys; voice id + toggle are plaintext prefs.
+
+    /**
+     * ElevenLabs TTS key + settings.
+     */
     private val keyElevenLabsKeyEncrypted = stringPreferencesKey("elevenLabsKey.encrypted")
     private val keyElevenLabsVoiceId = stringPreferencesKey("elevenLabsVoiceId")
     private val keyUseElevenLabs = booleanPreferencesKey("useElevenLabs")
-    // Vision routing — when true, VisionService tries the cloud
-    // backends (Gemini → MiniMax-VL) before the on-device Gemma
-    // path. Default is false (Gemma first) for privacy + zero-cost
-    // captioning; users with a Gemini key who prefer higher
-    // accuracy can flip this from Settings.
+
+    /**
+     * Vision routing preference.
+     */
     private val keyPreferCloudVision = booleanPreferencesKey("preferCloudVision")
-    // Supertonic-2 voice name (F1..F5 / M1..M5). The engine loads
-    // the matching <name>.json voice style on every speak() so
-    // changes apply immediately without restarting the app.
+
+    /**
+     * Supertonic-2 voice name.
+     */
     private val keySupertonicVoice = stringPreferencesKey("supertonicVoice")
 
     private val aead: Aead by lazy {
@@ -93,17 +83,20 @@ class SettingsStore @Inject constructor(
     }
 
     fun modelFlow(): Flow<String> = ctx.dataStore.data.map { prefs ->
-        prefs[keyModel] ?: DEFAULT_MODEL
+        coerceModel(prefs[keyModel])
     }
 
     suspend fun setApiKey(plain: String) {
-        val ct = aead.encrypt(plain.toByteArray(Charsets.UTF_8), null)
-        ctx.dataStore.edit { it[keyApiKeyEncrypted] = Base64.encodeToString(ct, Base64.NO_WRAP) }
+        val ct = aead.encrypt(plain.trim().toByteArray(Charsets.UTF_8), null)
+        ctx.dataStore.edit {
+            it[keyApiKeyEncrypted] = Base64.encodeToString(ct, Base64.NO_WRAP)
+        }
     }
 
-    /** Stored MiniMax web-session, decrypted. Returns null when
-     *  the user hasn't completed the WebView sign-in or the stored
-     *  session has expired (caller checks expiresAtMs). */
+    /**
+     * Stored legacy MiniMax web-session, decrypted. Returns null when unset,
+     * expired, or undecryptable.
+     */
     @kotlinx.serialization.Serializable
     data class MiniMaxWebSession(
         val token: String,
@@ -112,7 +105,8 @@ class SettingsStore @Inject constructor(
     )
 
     private val webSessionJson = kotlinx.serialization.json.Json {
-        ignoreUnknownKeys = true; explicitNulls = false
+        ignoreUnknownKeys = true
+        explicitNulls = false
     }
 
     suspend fun miniMaxWebSession(): MiniMaxWebSession? {
@@ -126,32 +120,40 @@ class SettingsStore @Inject constructor(
     suspend fun setMiniMaxWebSession(session: MiniMaxWebSession) {
         val plain = webSessionJson.encodeToString(MiniMaxWebSession.serializer(), session)
         val ct = aead.encrypt(plain.toByteArray(Charsets.UTF_8), null)
-        ctx.dataStore.edit { it[keyMiniMaxWebSessionEncrypted] = Base64.encodeToString(ct, Base64.NO_WRAP) }
+        ctx.dataStore.edit {
+            it[keyMiniMaxWebSessionEncrypted] = Base64.encodeToString(ct, Base64.NO_WRAP)
+        }
     }
 
     suspend fun clearMiniMaxWebSession() {
-        ctx.dataStore.edit { it.remove(keyMiniMaxWebSessionEncrypted) }
+        ctx.dataStore.edit {
+            it.remove(keyMiniMaxWebSessionEncrypted)
+        }
     }
 
-    /**
-     * Read the Gemini vision key. Same Tink AEAD path as the MiniMax key.
-     * Returns null if not set.
-     */
     fun geminiKeyFlow(): Flow<String?> = ctx.dataStore.data.map { prefs ->
         prefs[keyGeminiKeyEncrypted]?.let { tryDecrypt(it) }
     }
 
     suspend fun setGeminiKey(plain: String) {
-        if (plain.isBlank()) {
-            ctx.dataStore.edit { it.remove(keyGeminiKeyEncrypted) }
+        val trimmed = plain.trim()
+        if (trimmed.isBlank()) {
+            ctx.dataStore.edit {
+                it.remove(keyGeminiKeyEncrypted)
+            }
             return
         }
-        val ct = aead.encrypt(plain.toByteArray(Charsets.UTF_8), null)
-        ctx.dataStore.edit { it[keyGeminiKeyEncrypted] = Base64.encodeToString(ct, Base64.NO_WRAP) }
+
+        val ct = aead.encrypt(trimmed.toByteArray(Charsets.UTF_8), null)
+        ctx.dataStore.edit {
+            it[keyGeminiKeyEncrypted] = Base64.encodeToString(ct, Base64.NO_WRAP)
+        }
     }
 
     suspend fun clearGeminiKey() {
-        ctx.dataStore.edit { it.remove(keyGeminiKeyEncrypted) }
+        ctx.dataStore.edit {
+            it.remove(keyGeminiKeyEncrypted)
+        }
     }
 
     // ---------- ElevenLabs ----------
@@ -169,55 +171,81 @@ class SettingsStore @Inject constructor(
     }
 
     suspend fun setElevenLabsKey(plain: String) {
-        if (plain.isBlank()) {
-            ctx.dataStore.edit { it.remove(keyElevenLabsKeyEncrypted) }
+        val trimmed = plain.trim()
+        if (trimmed.isBlank()) {
+            ctx.dataStore.edit {
+                it.remove(keyElevenLabsKeyEncrypted)
+            }
             return
         }
-        val ct = aead.encrypt(plain.toByteArray(Charsets.UTF_8), null)
-        ctx.dataStore.edit { it[keyElevenLabsKeyEncrypted] = Base64.encodeToString(ct, Base64.NO_WRAP) }
+
+        val ct = aead.encrypt(trimmed.toByteArray(Charsets.UTF_8), null)
+        ctx.dataStore.edit {
+            it[keyElevenLabsKeyEncrypted] = Base64.encodeToString(ct, Base64.NO_WRAP)
+        }
     }
 
     suspend fun clearElevenLabsKey() {
-        ctx.dataStore.edit { it.remove(keyElevenLabsKeyEncrypted) }
+        ctx.dataStore.edit {
+            it.remove(keyElevenLabsKeyEncrypted)
+        }
     }
 
     suspend fun setElevenLabsVoiceId(voiceId: String) {
         val v = voiceId.trim()
         ctx.dataStore.edit {
-            if (v.isBlank()) it.remove(keyElevenLabsVoiceId) else it[keyElevenLabsVoiceId] = v
+            if (v.isBlank()) {
+                it.remove(keyElevenLabsVoiceId)
+            } else {
+                it[keyElevenLabsVoiceId] = v
+            }
         }
     }
 
     suspend fun setUseElevenLabs(value: Boolean) {
-        ctx.dataStore.edit { it[keyUseElevenLabs] = value }
+        ctx.dataStore.edit {
+            it[keyUseElevenLabs] = value
+        }
     }
 
     suspend fun setPreferCloudVision(value: Boolean) {
-        ctx.dataStore.edit { it[keyPreferCloudVision] = value }
+        ctx.dataStore.edit {
+            it[keyPreferCloudVision] = value
+        }
     }
 
     suspend fun setSupertonicVoice(name: String) {
         val v = name.trim()
         ctx.dataStore.edit {
-            if (v.isBlank()) it.remove(keySupertonicVoice) else it[keySupertonicVoice] = v
+            if (v.isBlank()) {
+                it.remove(keySupertonicVoice)
+            } else {
+                it[keySupertonicVoice] = v
+            }
         }
     }
 
     suspend fun setRegion(region: Region) {
-        ctx.dataStore.edit { it[keyRegion] = region.name }
+        ctx.dataStore.edit {
+            it[keyRegion] = region.name
+        }
     }
 
     suspend fun setModel(model: String) {
-        ctx.dataStore.edit { it[keyModel] = model }
+        ctx.dataStore.edit {
+            it[keyModel] = coerceModel(model)
+        }
     }
 
-    /** Convenience: a snapshot of the trio for the network layer. */
+    /**
+     * Convenience snapshot for the network layer.
+     */
     suspend fun snapshot(): Snapshot {
         val prefs = ctx.dataStore.data.first()
         return Snapshot(
             apiKey = prefs[keyApiKeyEncrypted]?.let { tryDecrypt(it) },
             region = Region.fromId(prefs[keyRegion]),
-            model = prefs[keyModel] ?: DEFAULT_MODEL,
+            model = coerceModel(prefs[keyModel]),
             geminiKey = prefs[keyGeminiKeyEncrypted]?.let { tryDecrypt(it) },
             elevenLabsKey = prefs[keyElevenLabsKeyEncrypted]?.let { tryDecrypt(it) },
             elevenLabsVoiceId = prefs[keyElevenLabsVoiceId] ?: DEFAULT_ELEVEN_LABS_VOICE_ID,
@@ -236,47 +264,26 @@ class SettingsStore @Inject constructor(
         val apiKey: String?,
         val region: Region,
         val model: String,
-        /** Optional Gemini vision key. Null means we fall back to MiniMax-VL-01. */
         val geminiKey: String? = null,
-        /** Optional ElevenLabs TTS key. Null disables the ElevenLabs route. */
         val elevenLabsKey: String? = null,
-        /** ElevenLabs voice id; defaults to a stock voice if unset. */
         val elevenLabsVoiceId: String = DEFAULT_ELEVEN_LABS_VOICE_ID,
-        /** When true AND key is set, Tts.speak routes through ElevenLabs. */
         val useElevenLabs: Boolean = false,
-        /** Vision routing: false (default) = on-device Gemma 4 E2B
-         *  first → cloud Gemini → MiniMax-VL. True flips the order
-         *  so cloud Gemini runs first (when the key is configured),
-         *  with Gemma + MiniMax as fallbacks. */
         val preferCloudVision: Boolean = false,
-        /** Supertonic-2 voice id (F1..F5, M1..M5). Defaults to M1. */
         val supertonicVoice: String = DEFAULT_SUPERTONIC_VOICE,
     )
 
     companion object {
-        /**
-         * Default = M2.7. The function-calling guide
-         * (platform.minimax.io/docs/guides/text-m2-function-call) explicitly
-         * cites M2.7 for "exceptional Tool Use capabilities" — the right
-         * default for an agentic runtime. Users who want faster/cheaper
-         * can pick a highspeed or older variant in Settings.
-         */
-        const val DEFAULT_MODEL: String = "gemini-1.5-flash"
+        const val DEFAULT_MODEL: String = "gemini-3.5-flash"
 
-val SUPPORTED_MODELS: List<String> = listOf(
-    "gemini-1.5-flash",
-)
-        /**
-         * Default ElevenLabs voice id — "Rachel", their long-standing
-         * stock voice that's available on the free tier. Users can
-         * pick a different voice id (any from their /v1/voices list)
-         * via Settings.
-         */
+        val SUPPORTED_MODELS: List<String> = listOf(
+            "gemini-3.5-flash",
+        )
+
+        fun coerceModel(model: String?): String =
+            model?.trim()?.takeIf { it in SUPPORTED_MODELS } ?: DEFAULT_MODEL
+
         const val DEFAULT_ELEVEN_LABS_VOICE_ID: String = "21m00Tcm4TlvDq8ikWAM"
 
-        /** Default on-device voice id when the user hasn't picked
-         *  one. M1 — male, neutral; matches what the engine
-         *  shipped with before the picker. */
         const val DEFAULT_SUPERTONIC_VOICE: String = "M1"
     }
 }
