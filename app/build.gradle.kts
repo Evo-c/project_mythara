@@ -179,8 +179,8 @@ dependencies {
     //   1. select the Android-variant native binaries (vs the desktop jar)
     //   2. disable transitive resolution that otherwise drags JNA's jar
     //      AND aar variants into the same module → duplicate-class crash
-    implementation("net.java.dev.jna:jna:5.13.0@aar")
-    implementation("com.alphacephei:vosk-android:0.3.47@aar")
+    implementation("net.java.dev.jna:jna:5.19.1@aar")
+    implementation("com.alphacephei:vosk-android:0.3.75@aar")
 
     // MediaPipe Text Embedder — on-device 100-dim sentence embeddings via
     // Universal Sentence Encoder Lite. Lazy-downloaded ~6MB tflite model.
